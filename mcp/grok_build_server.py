@@ -111,7 +111,7 @@ COMMON_TASK_PROPERTIES = {
 TOOLS: List[Dict[str, Any]] = [
     _tool(
         "setup",
-        "Refresh the local Grok Build model catalog for the target directory, then use ACP initialize metadata to attest the provider runtime default model and its highest advertised reasoning effort. Fails closed on stale catalogs, ambiguity, or mismatch.",
+        "Refresh the local Grok Build model catalog for the target directory, then use ACP initialize metadata to attest the provider runtime default model and its highest advertised reasoning effort. Codex main agents and subagents with access to this MCP server use the same contract. Fails closed on stale catalogs, ambiguity, or mismatch.",
         {
             "type": "object",
             "properties": {
@@ -134,7 +134,7 @@ TOOLS: List[Dict[str, Any]] = [
     ),
     _tool(
         "spawn_readonly",
-        "Start an asynchronous Grok Build research, plan, or review job. It requests the Grok CLI OS-level read-only sandbox and disables Grok subagents and external MCP servers. Returns a job ID immediately.",
+        "Start an asynchronous Grok Build research, plan, or review job for a Codex main agent or subagent caller. It requests the Grok CLI OS-level read-only sandbox and disables Grok's own subagents and external MCP servers. Returns an exact job ID immediately; the caller must retain it for lifecycle operations.",
         {
             "type": "object",
             "properties": {
@@ -149,7 +149,7 @@ TOOLS: List[Dict[str, Any]] = [
     ),
     _tool(
         "spawn_worker",
-        "Start an asynchronous Grok Build implementation job. Initial work requires a clean linked Git worktree. A Luna-requested correction must reference the immediately preceding successful worker job; the bridge proves no intervening worktree change and enforces at most two correction rounds with no retries or branches.",
+        "Start an asynchronous Grok Build implementation job for a Codex main agent or subagent caller. Initial work requires a clean linked Git worktree. A Luna-requested correction must reference the immediately preceding successful worker job; the bridge proves no intervening worktree change and enforces at most two correction rounds with no retries or branches.",
         {
             "type": "object",
             "properties": {
@@ -169,7 +169,7 @@ TOOLS: List[Dict[str, Any]] = [
     ),
     _tool(
         "status",
-        "Return lifecycle metadata for one Grok job without returning its potentially large answer.",
+        "Return lifecycle metadata for one exact Grok job ID without returning its potentially large answer. Safe for the Codex caller that owns that job lifecycle.",
         {
             "type": "object",
             "properties": {"job_id": {"type": "string", "format": "uuid"}},
@@ -205,7 +205,7 @@ TOOLS: List[Dict[str, Any]] = [
     ),
     _tool(
         "cancel",
-        "Cancel one job by terminating only the exact Grok process group created for that job.",
+        "Cancel one job by terminating only the exact Grok process group created for that job. A Codex subagent must not cancel a sibling caller's job.",
         {
             "type": "object",
             "properties": {"job_id": {"type": "string", "format": "uuid"}},

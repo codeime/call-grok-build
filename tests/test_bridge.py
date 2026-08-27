@@ -244,6 +244,82 @@ class BridgeTests(unittest.TestCase):
             finally:
                 manager.close()
 
+    def test_shared_manager_isolates_exact_jobs_for_independent_codex_callers(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as first_directory, \
+            tempfile.TemporaryDirectory() as second_directory:
+            manager = JobManager(max_workers=2)
+            try:
+                first = manager.spawn(
+                    mode="research",
+                    task="FAKE_SLEEP_SHORT",
+                    cwd=first_directory,
+                    timeout_seconds=30,
+                )
+                second = manager.spawn(
+                    mode="plan",
+                    task="independent caller",
+                    cwd=second_directory,
+                    timeout_seconds=30,
+                )
+                self.assertNotEqual(first["job_id"], second["job_id"])
+
+                deadline = time.monotonic() + 5
+                while manager.status(first["job_id"])["status"] == "queued":
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(0.02)
+                manager.cancel(first["job_id"])
+
+                first_status = wait_terminal(manager, first["job_id"], timeout=10)
+                second_status = wait_terminal(manager, second["job_id"], timeout=10)
+                self.assertEqual(first_status["status"], "cancelled", first_status)
+                self.assertEqual(second_status["status"], "succeeded", second_status)
+                self.assertEqual(
+                    manager.result(second["job_id"])["answer"],
+                    "fake Grok public answer",
+                )
+                listed_ids = {
+                    item["job_id"] for item in manager.list(limit=10)["jobs"]
+                }
+                self.assertTrue({first["job_id"], second["job_id"]} <= listed_ids)
+            finally:
+                manager.close()
+
+    def test_job_id_cannot_cross_independent_mcp_managers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            first_manager = JobManager(max_workers=1)
+            second_manager = JobManager(max_workers=1)
+            try:
+                spawned = first_manager.spawn(
+                    mode="review", task="independent server", cwd=directory
+                )
+                status = wait_terminal(first_manager, spawned["job_id"])
+                self.assertEqual(status["status"], "succeeded", status)
+                with self.assertRaises(BridgeError) as caught:
+                    second_manager.status(spawned["job_id"])
+                self.assertEqual(caught.exception.code, "E_JOB_NOT_FOUND")
+            finally:
+                first_manager.close()
+                second_manager.close()
+
+    def test_manager_close_cancels_subagent_owned_active_job(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = JobManager(max_workers=1)
+            spawned = manager.spawn(
+                mode="research",
+                task="FAKE_SLEEP",
+                cwd=directory,
+                timeout_seconds=30,
+            )
+            deadline = time.monotonic() + 5
+            while manager.status(spawned["job_id"])["status"] == "queued":
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.02)
+            manager.close()
+            status = wait_terminal(manager, spawned["job_id"], timeout=10)
+            self.assertEqual(status["status"], "cancelled", status)
+
     def test_readonly_job_fails_if_git_state_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -565,6 +641,12 @@ class BridgeTests(unittest.TestCase):
             "run_terminal_cmd,Agent",
             disallowed,
             "implementation must disable the real shell tool ID and recursive Agent tool",
+        )
+        self.assertIn("--no-subagents", command)
+        self.assertIn("--no-leader", command)
+        self.assertTrue(
+            any(rule.startswith("MCPTool(") for rule in rules),
+            f"missing MCP tool deny rule: {rules}",
         )
         self.assertNotIn("Bash", disallowed, "Bash is not the Grok shell tool ID")
         for tool in ("Write", "Edit"):

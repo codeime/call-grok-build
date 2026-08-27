@@ -30,6 +30,12 @@ git -C /path/to/repository worktree list --porcelain
 - 如果使用 marketplace，检查 source path 是相对于 marketplace 根目录的有效路径，而不是某台机器上的绝对路径。
 - 可在新 task 中请求列出 `grok-build` MCP 工具，确认存在 `setup`、`spawn_readonly`、`spawn_worker`、`status`、`result`、`list` 和 `cancel`。
 
+### subagent 看不到工具或拿不到结果
+
+- 插件不会按“主代理”身份拒绝调用，但 Codex 宿主必须确实把本插件的 Skill/MCP tools 暴露给当前 subagent。看不到工具时，让 subagent 返回有界任务包，由主代理执行；不要声称已调用。
+- 发起 spawn 的 subagent 必须在同一 MCP server 连接中等待终态并读取 `result`。job 只存在于该 server 的内存中，连接结束会取消活动 job，父任务或另一 subagent 不能用旧 ID 接力。
+- 若宿主给各 subagent 独立 server，进程间不共享两个异步 job worker 槽位、correction 链或同 worktree 锁。`setup` 不占用 worker 槽位。并行只读任务可以各自运行；并行实现必须使用不同的 linked worktree。
+
 ## `setup` 返回 `ready: false`
 
 ### CLI 找不到或能力不足
@@ -114,7 +120,7 @@ git -C /path/to/repository worktree list --porcelain
 | `E_PRIMARY_CHECKOUT` | 目标是 primary checkout，或 Git 根目录不是 linked worktree；创建/选择 linked worktree，不能绕过检查。普通非 Git 目录对应 `E_WORKTREE` |
 | `E_DIRTY_WORKTREE` | 初次实现前已有 staged、unstaged 或 untracked 变更；清理或另建干净 worktree |
 | `E_PRIMARY_SNAPSHOT` | 无法读取 primary checkout 快照；检查 Git 状态和权限 |
-| `E_WORKTREE_BUSY` | 同一 worktree 已有活动实现 job；等待其终态或对准确 job ID 调用 `cancel` |
+| `E_WORKTREE_BUSY` | 当前 MCP server 进程内同一 worktree 已有活动实现 job；等待其终态或对准确 job ID 调用 `cancel`。独立 server 之间不共享此锁，并行实现必须使用不同 linked worktree |
 | `E_PRIMARY_CHANGED` | 实现期间 primary checkout 发生变化；停止并检查两个目录，避免继续混用结果 |
 | `E_GIT_ADMIN_CHANGED` | 实现期间 Git 管理区发生变化；检查 `.git` 指针、common/admin 目录和锁文件，结果保持未验证 |
 | `E_COMMIT_DETECTED`、`E_HEAD_CHANGED` | Grok 改变了 HEAD 或分支；结果未验证，检查是否有提交或切换分支 |
@@ -138,9 +144,10 @@ Correction 不是失败重试。一次实现修复流程最多安排一次 Grok 
 ## 任务似乎卡住、结果拿不到
 
 - 只用 `status` 查看生命周期，避免高频轮询；默认超时为 30 分钟，硬上限为 60 分钟。
-- 检查 `list` 了解当前 MCP server 进程中的 job 数量；默认最多两个并发 Grok 进程。
+- 检查 `list` 了解当前 MCP server 进程中的 job 数量；默认最多两个异步 job 同时执行，`setup` 不计入该 worker 上限。
 - `E_JOB_CAPACITY` 表示内存中的 job 已达到上限；等待终态并让旧终态记录按生命周期清理，或取消仍在运行的准确 job。
 - MCP server 重启后，内存中的 job 不保证存在；不要假称可以用旧 job ID 恢复。
+- subagent 或其 MCP 连接结束时，活动 job 会被取消；先在同一连接中读完 `result` 和收据，再向父任务回报。
 - 如果结果被分页，使用 `result` 的 `offset` 和 `limit` 读取下一页；不要无限增大单页输出。
 
 ## 取消后或异常退出后仍有 Grok 进程

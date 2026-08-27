@@ -72,6 +72,27 @@ Codex 负责复现 high/critical finding。
 完成后必须由 gpt-5.6-luna 使用 max reasoning 独立 review 实际 diff。
 ```
 
+### 在 Codex subagent 中使用
+
+当宿主已把本插件的 Skill/MCP tools 提供给 subagent 时，可以让一个 Codex subagent 直接拥有完整调用生命周期：
+
+```text
+调用 Grok Build 做一次只读计划。
+你负责 setup、spawn、保存并轮询准确 job_id、读取 result，
+再把收据、关键结论和独立核验证据回传给父任务。
+不要创建第二个插件调用，也不要让父任务为相同目标重复 spawn。
+项目目录：/path/to/repository
+```
+
+调用约束：
+
+- 插件不检查调用者是主代理还是 subagent；是否可用取决于当前 Codex 宿主是否确实向该 subagent 暴露工具。
+- 同一 MCP server 内的 job 列表和两个默认异步 job worker 槽位由所有 Codex 调用者共享；`setup` 不占用这些槽位。每个调用者只操作自己明确持有的 `job_id`，不要取消同级 subagent 的 job。
+- 若宿主为不同 subagent 启动独立 MCP server，job、correction parent、并发计数和同 worktree 锁都不跨进程共享。subagent 必须在自己的连接中完成 `setup` → spawn → `status` → `result`，连接结束前取回收据；不能把 job ID 交给父任务或另一 subagent 接力。并发实现必须使用不同的 linked worktree。
+- 同一 worktree 的实现互斥、correction 链和 Luna Max 独立 review 要求保持不变。实现调用者可以自己运行测试并安排独立 reviewer，或把 worktree diff、测试证据和收据交回父任务完成 review；未完成前保持 `unverified`。
+- Codex subagent 可以调用插件，但不得再派生另一个插件调用者；Grok 的 `Agent` 和 subagents 仍在 CLI 层禁用。
+- 如果 subagent 看不到本插件工具，它应返回任务包让主代理执行，而不是声称已经调用。
+
 ## MCP 工具契约
 
 ### `setup`
@@ -158,7 +179,7 @@ cancel({"job_id": "<exact-job-id>"})
 
 1. 对目标目录调用 `setup`。
 2. 构造最小但完整的任务包，调用对应的 spawn 工具。
-3. 保存 `job_id`，以 10–30 秒间隔调用 `status`。
+3. 保存 `job_id`，以 10–30 秒间隔调用 `status`；由发起 spawn 的 Codex 调用者负责这个生命周期。
 4. `succeeded` 时调用 `result`；其他终态先检查错误，不把部分答案当作成功。
 5. 根据任务类型执行 Codex 核验，再报告结论。
 

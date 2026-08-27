@@ -1,14 +1,15 @@
 # Call Grok Build
 
-一个可分发的 Codex 插件：把边界明确的研究、计划、代码审查和实现任务交给本机已安装的 Grok Build，再由 Codex 独立核验结果。Grok 的回答和改动始终只是候选结果，不会自动成为最终结论。
+一个可分发的 Codex 插件：供 Codex 主代理或具备插件工具访问权的 subagent，把边界明确的研究、计划、代码审查和实现任务交给本机已安装的 Grok Build，再由 Codex 独立核验结果。Grok 的回答和改动始终只是候选结果，不会自动成为最终结论。
 
 ## 概览
 
 - Skill 会把自然语言请求整理成范围、约束、验收标准和证据要求明确的任务包。
 - MCP server 负责模型探测、异步任务、状态、结果、取消和收据。
 - `research`、`plan`、`review` 使用只读 sandbox；`implement` 只允许写入干净的 linked Git worktree。
-- 每个任务使用全新的 ACP 进程、会话和单条 prompt；实现结果必须经过 Codex 独立发起的 `gpt-5.6-luna`、`max` reasoning review。
+- 每个 job 使用独立的运行时 attest ACP 进程和全新的任务 ACP 进程；任务 ACP 只有一个新会话和单条 prompt。实现结果必须经过 Codex 独立发起的 `gpt-5.6-luna`、`max` reasoning review。
 - 收据记录模型证据、目录完整性快照、限制条件和验证状态，便于复查。
+- Codex subagent 可直接拥有一次完整调用生命周期；Grok 自己的 subagent/`Agent` 仍被禁用，避免递归委派。
 
 ## 要求
 
@@ -46,6 +47,19 @@ grok models
 ```
 
 Skill 会依次完成模型 setup、任务提交、状态等待和结果读取。通常不需要手动输入 MCP 工具名；需要了解工具参数或编排方式时，参阅 [使用指南](docs/USAGE.md)。
+
+## Codex subagent 调用
+
+当 Codex 宿主把本插件的 Skill/MCP tools 暴露给 subagent 时，主代理可以把一个边界明确的任务交给 Codex subagent，由该 subagent 直接完成 `setup`、spawn、等待、取回结果和初步核验，再把收据回传给父任务。插件本身不区分主代理和 subagent 调用者。
+
+```text
+让一个 Codex subagent 调用 Grok Build，只读 review 指定范围。
+该 subagent 负责保存并轮询自己的 job_id，完成后回传结果收据和复现证据；
+父任务不要为同一目标重复提交 Grok job。
+项目目录：/path/to/repository
+```
+
+支持边界：宿主必须确实向该 subagent 提供本插件工具；否则 subagent 只能把任务包交回主代理。连接到同一个 MCP server 的 Codex 调用者共享两个默认异步 job 执行槽位、job 列表和同 worktree 实现锁；`setup` 不占用这些 worker 槽位。若宿主为不同 subagent 启动独立 MCP server，这些进程不会共享 job、correction 链、并发计数或 worktree 锁；subagent 必须在自己的连接中完成整个生命周期，不能把 job ID 交给另一进程继续，并发实现必须使用不同的 linked worktree。每个调用者只操作自己明确持有的 job ID。这里允许的是 Codex subagent 调用，绝不重新启用 Grok 的 `Agent`，也不允许任何一层递归调用本插件。
 
 ## 四类任务
 
@@ -99,7 +113,7 @@ git -C /path/to/repository worktree add \
 ## 架构
 
 ```text
-Codex task
+Codex task（主代理或具备工具访问权的 subagent）
    │ Skill：整理范围与验收标准
    ▼
 Call Grok Build MCP server（内部配置键：grok-build）
@@ -137,12 +151,12 @@ MCP 工具包括 `setup`、`spawn_readonly`、`spawn_worker`、`status`、`resul
 
 ## 循环与并发限制
 
-- 一个 job 只有一个全新的 ACP 进程、会话和 prompt。
+- 一个 job 的运行时 attest 与任务执行使用独立 ACP 进程；任务 ACP 只有一个全新的会话和 prompt。
 - 默认 24 turns，硬上限 48 turns；默认超时 30 分钟，硬上限 60 分钟。
 - job 的执行超时从进入 `running` 开始，覆盖前置/后置快照、CLI 探测、模型 attest 和 ACP 任务；队列等待时间不计入该执行超时。`setup` 使用独立的 120 秒默认截止时间，最大 180 秒。
-- 不自动重试、不自动重新委派、不允许 Grok 调用本插件或再创建 Grok/Codex 任务。
+- 不自动重试、不自动重新委派；Codex subagent 只可拥有一次明确的调用生命周期，不允许它递归派生插件调用，也不允许 Grok 调用本插件或再创建 Grok/Codex 任务。
 - 实现收到 Luna 的修改意见后，最多允许两轮有明确 parent 的 correction；这是桥接层安全上限，不代表工作流会自动循环。默认流程只安排一次修复复审和一次 Luna Max 终审。
-- 默认最多两个并发 Grok 进程；同一个 worktree 同时只能有一个实现任务。
+- 默认最多两个异步 job 同时执行；`setup` 不计入该 worker 上限，同一个 worktree 同时只能有一个实现任务。
 
 达到 turn/output 限制、超时、取消或模型切换时，任务停止并报告状态；不会以部分结果冒充成功。正常取消或 MCP 关闭会清理对应的子进程组；如果宿主遭遇 SIGKILL 或崩溃，清理代码无法运行，仍可能残留孤儿 Grok 进程，不能把本插件描述成绝对的父子进程存活保证。实现任务即使取消或超时，也应检查 worktree，因为进程终止不会自动回滚文件。
 

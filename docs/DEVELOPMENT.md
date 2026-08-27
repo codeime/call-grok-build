@@ -27,6 +27,7 @@
 - 只读快照必须覆盖准确 `cwd` 的 symlink scope、Git tracked/untracked/ignored 内容、Git `.git` pointer、common/worktree admin 和 object database，并覆盖非 Git 目录的有界文件树；完整性无法证明时要失败关闭。
 - Git diff 必须保持 `--no-ext-diff --no-textconv`；Git root 必须是 `cwd` 的真实祖先；config include、外部 path、filter 和 alternate object database 必须在执行 helper 或工作区快照前失败关闭。
 - 不要移除单 prompt、turn/time ceiling、output 上限、correction 上限、并发锁或 fail-closed 检查来追求表面吞吐。
+- 主代理和具备插件工具访问权的 Codex subagent 使用同一 MCP 契约；不要引入依赖主代理身份的隐藏检查。调用者必须在同一 MCP 连接内按准确 job ID 管理完整生命周期。单个 server 共享 job manager、两个异步 job worker 槽位和同 worktree 实现锁；`setup` 不走该 executor。独立 server 进程之间不共享这些状态，因此并发 implement 调用者必须使用不同的 linked worktree。
 - 不要让 Grok worker 调用本插件、其他 Grok worker 或 Codex 委托；不要添加自动重试、自动重新委派或递归修复。
 - 一次实现修复流程最多做一次 Grok 修复回归复审，再做一次 Luna Max 独立终审；bridge 的 correction 上限是安全护栏，不是循环许可。
 
@@ -54,12 +55,14 @@ python3 -Wd -m unittest discover -s tests -v
 - `--no-textconv` 不执行 repository textconv；include/includeIf、外部 path 或有效的 clean/smudge/process filter 返回 `E_GIT_CONFIG_EXTERNAL` 且不执行 helper；外部 `core.worktree` 返回 `E_GIT_SCOPE`，object alternates 被拒绝；
 - 参数化边界测试证明等于限制可接受、`+1` 被拒绝，并断言实际常量：普通 scan 为 20,000 条目/128,000,000 字节、tracked scan 为 200,000 条目、object scan 为 200,000 条目/512,000,000 字节；
 - `spawn_readonly` 在运行时拒绝 `implement`，不能只依赖 MCP schema enum；
+- 两个独立 Codex 调用者风格的 job 获得不同 ID；取消其中一个不会终止另一个，证明共享 manager 的准确 job-ID 隔离；
+- 独立 manager/MCP 进程不能读取彼此 job ID，避免文档误导调用者做跨进程生命周期接力；
 - 带日志前缀的 Authorization、JSON 字符串/数组/对象凭据、无密码/FTP userinfo 会在序列化前的完整收据边界递归脱敏，输出仍是合法 JSON；
 - 任务排队后替换路径时，稳定目录句柄不会把 Grok 导向另一个目录；
 - stderr/answer output 超限、turn limit、超时、取消、模型 fallback/switch 和 correction 上限不会被标记为成功；fallback 即使出现在 stderr 保留上限之后也必须被识别；
 - job deadline/cancel 覆盖 pre/post snapshot、Git、probe、ACP attest 与任务进程；setup 的单一 deadline 覆盖 catalog probe 与 ACP initialize；
 - ACP stdin 在管道背压时仍响应绝对 deadline/cancel，异常写入会清理 pending waiter；进程组 leader 先退出时仍会清理同一 bridge-owned group；
-- 公开 setup/status/result/error 的递归脱敏不会泄露凭据、账号路径、邮箱或认证头。
+- 公开 setup/status/result/error 的递归脱敏不会泄露凭据、账号路径、邮箱或认证头；文档明确区分“Codex subagent 可作为调用者”和“Grok subagents 始终禁用”。
 
 fake Grok 用于验证参数、协议、收据和前后快照，不证明真实 Grok CLI 一定遵守 OS sandbox 或 deny 规则。真实 smoke test 只能提供当前安装版本的运行证据，不能替代快照和失败关闭。
 

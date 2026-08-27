@@ -5,7 +5,7 @@
 ## 数据流
 
 ```text
-Codex task
+Codex task（主代理或具备工具访问权的 subagent）
    │ 任务包与选定上下文
    ▼
 MCP server / bridge
@@ -39,8 +39,12 @@ Grok Build 的工具进程在本机运行，但 prompt 和选中的代码/文件
 - 使用已有的 `grok login` 缓存认证；插件不会把 `XAI_API_KEY` 或代理凭据转发给 worker。
 - worker 只接收有限的环境变量：`HOME`、`PATH`、`TMPDIR`、locale/terminal 和 TLS 证书路径，以及桥接层自己的禁用更新/颜色标记。`USER`、`LOGNAME`、`XAI_API_KEY` 和代理变量不会转发。
 - 公开的 setup、status、result 和错误响应会在序列化前递归处理所有字符串及凭据命名字段（含 kebab/camel/snake case 与常见复数），脱敏已知环境值/路径、常见 URL query token、带日志前缀的认证/API-key/Cookie 头、JSON 字符串/数组/对象凭据、含密码或无密码的常见 URL userinfo、账号路径和邮箱。这只是防御性措施，不能替代主动脱敏。
-- 每个任务建立全新的 ACP session；如果 CLI 支持 `--no-memory`，插件会使用它，否则收据会记录 `fresh_session_without_memory_opt_in`。不要作出收据之外的记忆隔离承诺。
+- 每个任务 ACP 建立全新的 session；如果 CLI 支持 `--no-memory`，插件会使用它，否则收据会记录 `fresh_session_without_memory_opt_in`。不要作出收据之外的记忆隔离承诺。
 - Grok 不会获得客户端 MCP server；桥接层关闭 Grok subagents，并在可用时禁止 MCP tool calls。
+
+Codex 主代理和 subagent 属于同一受信任任务边界：宿主把插件工具暴露给 subagent 后，它可以直接调用，但同一 MCP server 不提供调用者级权限隔离。`list` 可能显示同级调用者的 job，持有准确 `job_id` 的调用者也能查询或取消对应 job。不要把插件工具交给不受信任的 subagent；每个调用者只管理自己明确发起的生命周期，不要共享、猜测或误取消其他 job。同一 server 的两个异步 job worker 槽位和同 worktree 写入锁由其调用者共享；`setup` 不占用这些槽位。
+
+独立 MCP server 进程不共享 job、correction 链、并发计数或 worktree 锁。server 连接关闭时会取消该进程内的活动 job，另一进程不能用旧 ID 恢复或继续。多个 subagents 并行执行 implement 时必须使用不同的 linked worktree；否则两个进程可能同时写入，而单进程内的 `E_WORKTREE_BUSY` 无法提供跨进程保护。
 
 ## 模型与运行时证明
 
@@ -108,7 +112,7 @@ Codex 应把原始需求、验收条件、实际 artifact 和测试证据交给 
 
 正常取消或 MCP server 正常关闭时，桥接层会尝试清理该 job 的准确进程组。宿主若遭遇 SIGKILL、崩溃或断电，清理代码无法执行，仍可能残留孤儿 Grok 进程；这是已知的残余风险，不能宣称绝对的父子进程存活保证。异常恢复时只检查收据中的准确 job/process 证据，不要扩大杀进程范围。
 
-一次实现修复流程最多安排一次针对修复结果的 Grok 回归复审，再安排一次 Luna Max 独立终审；不允许 Grok 递归调用本插件，也不允许自动重试或重新委派。bridge 的 correction 上限是安全护栏，不是继续循环的许可。
+一次实现修复流程最多安排一次针对修复结果的 Grok 回归复审，再安排一次 Luna Max 独立终审；Codex subagent 可以作为一次调用生命周期的负责人，但不允许它再次派生插件调用，不允许 Grok 递归调用本插件，也不允许自动重试或重新委派。bridge 的 correction 上限是安全护栏，不是继续循环的许可。
 
 job 的 `timeout_seconds` 从进入 `running` 开始，覆盖前置/后置 scope 与内容快照、Git 子进程、CLI probe、模型 attest 和 ACP 任务；队列等待时间不计入执行超时。取消会检查同一批阶段并终止当前准确进程组。`setup` 使用独立的单一截止时间（默认 120 秒、最大 180 秒），覆盖 catalog probe 和 ACP initialize。任务达到终态前会先清理进程句柄，避免“已结束但子进程仍被标记为活动”的窗口。
 

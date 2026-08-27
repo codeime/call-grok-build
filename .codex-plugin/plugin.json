@@ -1,21 +1,23 @@
 {
   "name": "call-grok-build",
-  "version": "0.1.0+codex.20260827054714",
-  "description": "\u8c03\u7528\u672c\u673a Grok Build \u5b8c\u6210\u6709\u8fb9\u754c\u7684\u4efb\u52a1\uff0c\u518d\u7531 Codex \u72ec\u7acb\u6838\u9a8c\u7ed3\u679c\u3002",
+  "version": "0.1.0+codex.20260827062119",
+  "description": "\u4f9b Codex \u4e3b\u4ee3\u7406\u6216\u5177\u5907\u5de5\u5177\u8bbf\u95ee\u6743\u7684 subagent \u8c03\u7528\u672c\u673a Grok Build\uff0c\u518d\u7531 Codex \u72ec\u7acb\u6838\u9a8c\u7ed3\u679c\u3002",
   "author": {
     "name": "Call Grok Build"
   },
   "keywords": [
     "grok-build",
     "agent-calling",
+    "subagent",
+    "multi-agent",
     "cross-review",
     "local-cli"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Call Grok Build",
-    "shortDescription": "\u8c03\u7528 Grok\uff0c\u7531 Codex \u590d\u6838",
-    "longDescription": "\u901a\u8fc7\u672c\u673a Grok Build CLI \u6267\u884c\u7814\u7a76\u3001\u8ba1\u5212\u3001\u5ba1\u67e5\u548c linked worktree \u5b9e\u73b0\u4efb\u52a1\uff1b\u52a8\u6001\u4f7f\u7528\u8fd0\u884c\u65f6\u9ed8\u8ba4\u6a21\u578b\u53ca\u5176\u6700\u9ad8\u63a8\u7406\u6863\u4f4d\uff0c\u5e76\u8981\u6c42 Codex \u72ec\u7acb\u6838\u9a8c\u3002",
+    "shortDescription": "\u4e3b\u4ee3\u7406\u6216 subagent \u8c03\u7528 Grok\uff0cCodex \u590d\u6838",
+    "longDescription": "\u4f9b Codex \u4e3b\u4ee3\u7406\u6216\u5177\u5907\u63d2\u4ef6\u5de5\u5177\u8bbf\u95ee\u6743\u7684 subagent \u901a\u8fc7\u672c\u673a Grok Build CLI \u6267\u884c\u7814\u7a76\u3001\u8ba1\u5212\u3001\u5ba1\u67e5\u548c linked worktree \u5b9e\u73b0\u4efb\u52a1\uff1b\u52a8\u6001\u4f7f\u7528\u8fd0\u884c\u65f6\u9ed8\u8ba4\u6a21\u578b\u53ca\u5176\u6700\u9ad8\u63a8\u7406\u6863\u4f4d\uff0c\u5e76\u8981\u6c42 Codex \u72ec\u7acb\u6838\u9a8c\u3002",
     "developerName": "Call Grok Build",
     "category": "Productivity",
     "capabilities": [
@@ -25,7 +27,8 @@
     "defaultPrompt": [
       "\u8c03\u7528 Grok Build \u7814\u7a76\u8fd9\u4e2a\u95ee\u9898\uff0c\u5e76\u6838\u9a8c\u5173\u952e\u7ed3\u8bba\u3002",
       "\u8ba9 Grok Build \u5236\u5b9a\u8ba1\u5212\uff0c\u518d\u68c0\u67e5\u5176\u4e2d\u7684\u5047\u8bbe\u3002",
-      "\u8ba9 Grok \u5728 worktree \u4e2d\u5b9e\u73b0\uff0c\u518d\u6267\u884c Luna Max \u5ba1\u67e5\u3002"
+      "\u8ba9 Grok \u5728 worktree \u4e2d\u5b9e\u73b0\uff0c\u518d\u6267\u884c Luna Max \u5ba1\u67e5\u3002",
+      "\u8ba9\u4e00\u4e2a Codex subagent \u8c03\u7528 Grok Build \u5b8c\u6210\u6709\u8fb9\u754c\u7684\u4efb\u52a1\uff0c\u5e76\u5e26\u6536\u636e\u56de\u62a5\u3002"
     ],
     "brandColor": "#5B67F1",
     "composerIcon": "./assets/icon.png",

@@ -12,7 +12,17 @@
 - `list(limit)`：列出内存中的 job。活动 job 不保证在 MCP server 重启后继续存在。
 - `cancel(job_id)`：只终止这个准确 job 所拥有的进程组。
 
-`setup` 与选定任务必须使用同一个绝对 `cwd`。默认并发数是两个 Grok 进程；写入任务会锁定目标 worktree，防止另一个写入任务同时使用。job 默认执行超时 30 分钟、硬上限 60 分钟，从 `running` 开始且不包含排队时间；它覆盖 scope/content snapshot、Git、probe、attest 和 ACP。默认 turns 为 24，硬上限 48。
+`setup` 与选定任务必须使用同一个绝对 `cwd`。默认并发数是两个异步 job worker；`setup` 不走该 executor，也不占用这两个槽位。写入任务会锁定目标 worktree，防止当前 server 的另一个写入任务同时使用。job 默认执行超时 30 分钟、硬上限 60 分钟，从 `running` 开始且不包含排队时间；它覆盖 scope/content snapshot、Git、probe、attest 和 ACP。默认 turns 为 24，硬上限 48。
+
+## Codex 调用者与并发
+
+插件的 MCP 工具不绑定“主代理”身份。只要 Codex 宿主把这些工具提供给当前 subagent，主代理或 subagent 都可以直接调用；宿主没有暴露工具时，subagent 必须把任务包交回主代理，不能伪装成已执行。
+
+发起 spawn 的 Codex 调用者应拥有该 job 的完整生命周期：在同一 MCP server 连接中保存准确 `job_id`，只查询、读取或取消这个 job，并向父任务返回收据。`list` 和 job 状态属于同一个 MCP server 的共享内存；同一任务内的受信任 Codex 调用者可能看到彼此 job，因此不要把 `list` 当作调用者隔离，也不要让同级 subagent 共享或猜测 job ID。默认两个异步 job worker 槽位在同一 server 的调用者之间共享，超出的 job 排队；`setup` 不占用这些槽位。同一进程内的 worktree implement 锁和 correction 链规则不会因调用者不同而放宽。
+
+若 Codex 宿主为每个 subagent 启动独立 MCP server，则每个进程都有独立的内存 job manager：旧 `job_id` 在另一进程中不可查询，server 连接关闭会取消其活动 job，correction parent 也不能跨进程引用。跨进程的并发计数和 worktree 锁不共享，因此多个并行 implement 调用者必须使用不同的 linked worktree；不要依赖另一个进程返回 `E_WORKTREE_BUSY`。
+
+一个父任务只能为同一个有界目标指定一个生命周期负责人。父代理不得在 subagent 已经 spawn 后再次提交相同任务，subagent 也不得再派生一个调用本插件的 subagent。Codex subagent 调用与 Grok subagents 是两件事：前者受宿主工具暴露能力控制，后者在 CLI 层始终禁用。
 
 ## 模型和 effort 选择
 
@@ -39,7 +49,7 @@ Evidence/output required:
 - `succeeded`：读取 `result`，检查收据，并执行独立验证门槛；
 - `failed`、`timed_out` 或 `cancelled`：检查错误和目标状态，不要把部分输出当作可接受结果。
 
-自动重试和自动重新委派均为零。模型切换、turn limit、output limit、超时、空回答或进程重启都是停止条件。Luna 发现问题后的 correction 是一个新的、有明确 parent 的 worker job，不是重试，并且只能在两轮 correction 安全上限内进行。产品流程最多安排一次 Grok 修复回归复审和一次 Luna Max 独立终审；不允许递归调用本插件。
+自动重试和自动重新委派均为零。模型切换、turn limit、output limit、超时、空回答或进程重启都是停止条件。Luna 发现问题后的 correction 是一个新的、有明确 parent 的 worker job，不是重试，并且只能在两轮 correction 安全上限内进行。产品流程最多安排一次 Grok 修复回归复审和一次 Luna Max 独立终审；Codex subagent 可以作为一次生命周期负责人，但不得递归调用本插件。
 
 ## 收据
 
