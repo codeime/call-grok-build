@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "grok-build": {
+      "command": "python3",
+      "args": [
+        "mcp/grok_build_server.py"
+      ],
+      "cwd": ".",
+      "env_vars": [
+        "HOME",
+        "PATH",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "TERM",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR"
+      ]
+    }
+  }
+}
