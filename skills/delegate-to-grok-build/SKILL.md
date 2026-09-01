@@ -1,52 +1,102 @@
 ---
 name: delegate-to-grok-build
-description: 供 Codex 主代理或具备插件工具访问权的 subagent 调用本机 Grok Build CLI，处理边界明确的研究、计划、实现或代码审查任务，再由 Codex 独立核验结果。用于明确的 Grok Build 调用或跨模型复核；不要用于密钥或未经授权的外部变更。
+description: 供 Codex 主代理或具备插件工具访问权的 subagent 调用本机 Grok Build CLI，在当前 Codex workspace 中处理研究、计划、实现或代码审查，再由 Codex 独立核验结果。用于明确的 Grok Build 调用或跨模型复核；不要用于密钥或未经授权的外部变更。
 ---
 
 # Call Grok Build
 
-把随插件提供的 `grok-build` MCP server 当作一个有边界的第二代理。Grok 的回答和改动都是不可信的候选输出；范围控制、验证和最终处置由 Codex 负责。
+把随插件提供的 grok-build MCP server 当作一个有边界的第二代理。Grok 的回答和修改都是不可信的候选输出；任务范围、验证和最终处置由 Codex 负责。
+
+## 触发与授权
+
+- 只有当前用户请求明确点名 Grok Build，且目标就是当前 Codex workspace 时，才实际调用插件。
+- 这条明确请求已经授权一次有界流程，把完成任务所必需且位于当前 workspace 范围内的 prompt、代码和上下文发送给 xAI。
+- 不要仅因为仓库是私有仓库、内容会发送到 xAI、任务是 implement 或调用者是 subagent 而再次询问。
+- 该授权覆盖初次 job；如果 Luna 发现问题，也覆盖同 cwd 内最多一次 correction、一次 Grok 回归复审和一次 Luna Max 终审。
+- 授权不覆盖密钥、客户/第三方数据、任务外目录、额外外部操作、自动重试或重新委派。涉及这些内容时停下并说明边界。
+
+## 运行方式
+
+- Codex 宿主自动把当前 workspace 的绝对 cwd 传给插件；Grok 在同一个 cwd 原生启动。
+- 所有任务都走 direct。不要复制项目、建立临时副本、切换辅助目录或改变当前 Git 状态来调用 Grok。
+- 可选的 paths 只用于 prompt 关注范围，不是访问控制，不改变 cwd，也不会复制文件。
+- implement 可以作用于 primary checkout、已有 staged/unstaged/untracked 修改和非 Git 目录。
+- bridge 不扫描 Git 或整个目录内容，也不声称能区分任务前已有修改与 Grok 新增修改。Codex 负责任务前记录状态、任务后检查 diff 和运行测试。
 
 ## 路由任务
 
-- 研究、计划和代码审查：调用 `spawn_readonly`，并将 `mode` 设为 `research`、`plan` 或 `review`。
-- 实现：仅在干净的 linked Git worktree 中调用 `spawn_worker`，绝不能把 primary checkout 作为实现目标。Grok 的 `run_terminal_cmd` 和 `Agent` 被禁用；它只修改文件，测试由 Codex 在返回后运行。
-- 生命周期：先调用 `setup`，任务运行时使用 `status`，终态后调用 `result`；使用 `list` 查看内存中的 job，使用 `cancel` 取消一个准确的 job ID。
+- 研究、计划和代码审查：调用 delegate_readonly，mode 为 research、plan 或 review。
+- 实现：调用 spawn_worker，mode 固定为 implement。
+- 正常生命周期：delegate_readonly 或 spawn_worker 返回 job_id，再由同一调用者调用 await_result。
+- setup 仅作诊断，不是正常调用的必经步骤。
+- 失败、超时、取消、空结果、模型切换或达到限制后，不自动重试或重新委派。
 
 ## Codex subagent 调用
 
-- 如果当前 Codex 宿主已把本插件的 Skill/MCP tools 暴露给 subagent，subagent 可以直接执行完整的 `setup` → spawn → `status` → `result` 生命周期；插件不要求调用者必须是主代理。
-- 发起 job 的 Codex 调用者负责在同一 MCP server 连接内保存准确 `job_id`、等待或取消该 job，并把结果收据与独立核验证据回传给父任务。不要把 job ID 交给另一 MCP 进程接力，也不要因为父子代理都在等待，就为同一任务重复 spawn。
-- 同一 MCP server 默认共享两个异步 job 执行槽位；`setup` 不占用这些 worker 槽位，额外 job 请求排队，同一 worktree 的实现只允许一个。宿主若为 subagents 启动独立 MCP server，各进程不共享 job、correction 链、并发计数或 worktree 锁；并发实现必须使用不同的 linked worktree。只操作自己明确持有的 job ID，不要取消同级 subagent 的 job。
-- 这里的 subagent 指 Codex subagent。Grok 自己的 `Agent`/subagent 始终禁用，且任何 Codex 调用者都不得让 Grok 递归调用本插件。
-- 宿主若没有向 subagent 提供本插件工具，subagent 应把有界任务包交回主代理调用，不得声称已经直接执行。
+如果当前 Codex 宿主已把本插件的 Skill/MCP tools 暴露给 subagent，subagent 可以直接完成一次完整生命周期。宿主没有暴露工具时，subagent 应把有界任务包交回主代理，不能声称已经执行。
+
+发起 job 的调用者负责在同一 MCP server 连接内保存准确 job_id、等待、读取结果和取消。不要把 job ID 交给另一个 MCP 进程接力，也不要因为父子代理都在等待而重复发起相同 job。
+
+Grok 自己的 Agent/subagent 始终禁用。任何 Codex 调用者都不得让 Grok 递归调用本插件或其他代理。
 
 ## 必须遵循的顺序
 
-1. 解析一个明确的绝对 `cwd`，setup 和任务必须使用同一个目录。确认选中的文件和上下文获准发送到 xAI；处理私有代码或写入任务前先阅读[安全边界](references/security-boundary.md)。
-2. 调用 `setup`。只有在它同时报告 `ready: true`、`runtime_attested: true`、provider/runtime default model，以及该模型实际广告的最高 effort 时才继续。每个目标都实时解析；绝不把某个模型版本写死、根据名字猜更强模型，或接受 fallback、catalog/ACP 不一致。
-3. 发送精简的任务包，明确目标、准确范围、约束、验收标准和所需证据。没有必要时不要转发完整对话。
-4. 启动最窄的匹配任务，以适合人的间隔等待，job 进入终态后再读取 `result`。spawn 只负责排队；linked-worktree、scope 和快照校验在 `running` 阶段完成，失败时读取 job 错误。工具字段、收据和停止条件见[工作流协议](references/workflow-protocol.md)。
-5. 在把回答当作结论前独立核验回答或 diff。收据有效不等于 Grok 的说法正确。
+1. 使用宿主提供的当前 workspace cwd，构造有边界的任务包：
+
+   Goal:
+   Scope:
+   Constraints:
+   Acceptance criteria:
+   Evidence/output required:
+
+2. 只读任务调用 delegate_readonly；需要缩小 prompt 关注范围时传非空相对 paths。不要先 setup。
+3. 实现任务调用 spawn_worker。Grok 只能使用 workspace sandbox 的文件工具修改文件，不能运行 terminal、解释器、Git、测试或 Agent。
+4. 立即保存准确 job_id。对该 job 调用 await_result；短任务一次等待终态，长任务只在本次等待超时后继续等待同一 job。
+5. 读取回答前独立判断模型证据、任务结果和实际状态。收据有效不等于 Grok 的说法正确。
+
+## 动态模型
+
+每个 job 都刷新实时 grok models，并通过 ACP initialize 元数据确认 provider/runtime default model。使用该模型实际广告的最高 reasoning effort：
+
+~~~text
+xhigh > high > medium > low > none
+~~~
+
+不得写死 Grok 版本、根据版本字符串猜测强弱、静默接受 fallback 或忽略 model-switch。catalog、ACP runtime、完成信息或 model-switch 事件不一致时，结果保持未验证并失败关闭。
 
 ## 验证门槛
 
-- 研究：打开决策关键来源，检查日期和范围，并区分事实、推断和无依据说法。
-- 计划：质疑范围、假设、迁移、回滚、测试、权限和破坏性风险；安全、迁移、权限或破坏性计划应使用独立 Luna Max 复核。
-- 代码审查：从源码和测试复现所有 high/critical 严重度的 finding 后再接受。
-- 实现：Grok 返回后先由 Codex 运行相关测试，再使用只读的 `gpt-5.6-luna`、`max` reasoning，针对原始需求、验收标准、实际 worktree diff 和测试证据做独立 review。不要把 Grok 的结论提供给 reviewer；由 Codex 独立判断并检查 diff。
-- 一次实现修复流程最多安排一次针对修复结果的 Grok 回归复审，再安排一次 Luna Max 独立终审；允许一个 Codex subagent 直接拥有一次调用生命周期，但不允许 Grok 或 Codex 调用者递归调用本插件、自动重试或自动重新委派。
+- 研究：打开并核对决策关键来源，区分事实、推断和无依据说法。
+- 计划：质疑范围、假设、迁移、回滚、测试、权限和破坏性风险。
+- 代码审查：从源码和测试复现 high/critical finding。
+- 实现：Codex 在 Grok 返回后运行相关测试，检查实际 diff，再使用只读 gpt-5.6-luna、max reasoning，针对原始需求、验收标准、实际 diff 和测试证据做独立 review。不要把 Grok 的结论直接转交 reviewer。
 
-如果 Luna reviewer 不可用或失败，保持实现为 `unverified`；不要 merge、commit、push，也不要声称已完成。如果它返回 `needs_changes`，可以创建一个明确的 correction job，并引用紧邻的上一个成功 worker job。bridge 最多允许两轮 correction，拒绝分支、复用 parent 和中间编辑；第二轮仍需修改时停止为 `unverified`。这个安全上限不代表工作流自动循环。
+如果 Luna 返回 needs_changes，最多创建一次带明确 parent 的 correction，并做一次 Grok 回归复审和一次 Luna Max 终审。第二次仍需修改时停止并保持 unverified。
 
-## 循环与变更保护
+## 循环、并发和变更保护
 
-- 一个 job 的运行时 attest 与任务执行使用独立 ACP 进程；任务 ACP 只创建一个全新的会话并发送单条 prompt。每个 ACP task 都显式禁用 `run_terminal_cmd,Agent`；Grok worker 不得运行 shell/interpreter/Git/测试，不得调用本插件、另一个 Grok worker 或 Codex 委托。
-- 失败、超时、取消、达到 turns/output 上限、模型切换或空结果的 job 不会自动重试或重新委派。检查收据后停止，除非调用方明确授权一个新的有界尝试。
-- bridge 强制 turns 上限、截止时间、输出上限和最多两轮 correction；correction 是新的、有明确 parent 的 job，不是自动重试。
-- bridge 不提交、推送、合并、变基、cherry-pick、reset、clean，也不创建或删除 worktree。这些操作不属于本 Skill 的委托边界。
-- 正常取消或 MCP 关闭会清理对应的准确子进程组；宿主遭遇 SIGKILL 或崩溃时清理代码无法运行，仍可能留下孤儿 Grok 进程。这是已知残余风险，不得宣称绝对的父子进程存活保证。
+- 一个 job 只有一个无 session/prompt 的 discovery ACP 进程，以及一个单 session/单 prompt 的 task ACP 进程；discovery 不发送任务包或仓库内容。
+- bridge 强制 turns、截止时间、输出上限和 correction 上限；这些护栏不是自动循环许可。
+- 同一 cwd 同时只允许一个 implement job；read-only job 可以并行。
+- 不提交、推送、合并、变基、cherry-pick、reset、clean 或执行其他用户未要求的外部操作。
+- cancel 只终止准确 job 创建的进程组；不要使用 pkill、killall 或模糊匹配。
+- implement 取消或超时后仍要由 Codex 检查实际 diff，因为进程终止不会撤销已经发生的文件修改。
 
-## 报告
+## 安全边界
 
-返回 Grok 做了什么、独立核验的证据、测试或复现结果、实际选择的模型/effort，以及仍未验证的部分。保留结果收据，包括循环护栏、模型证据、sandbox、Git/文件树快照、correction 链和验证状态。
+- Grok 使用 read-only 或 workspace sandbox；真实工具 ID run_terminal_cmd 和 Agent 始终禁用。
+- bridge 使用最小环境，不向 worker 转发 XAI_API_KEY、代理凭据和其他常见认证变量。
+- 不把 API key、密码、token、cookie、.env、SSH 私钥、证书、生产凭据、客户数据或无关个人资料放入任务。
+- 公开回答、错误和收据会递归脱敏账号路径、邮箱、URL userinfo、认证头和常见凭据形状；这不等于代码内容匿名化。
+- 当前 workspace 的根目录、home 和明显的系统配置目录不能作为 cwd；使用具体项目或资料目录。
+
+## 结果报告
+
+结果使用 grok.codex.result.v2。workspace.integrity_snapshot 固定为 not_collected。收据应保留：
+
+- 实际 model 和 reasoning_effort，以及 catalog/ACP 证明；
+- sandbox、cwd 标签、session 和 usage（可用时）；
+- loop_guard、correction 链和停止原因；
+- answer、errors 和验证状态。
+
+Codex 应报告 Grok 做了什么、独立核验的证据、测试或复现结果、实际 model/effort，以及仍未验证的部分。verified 只有在 Codex 完成独立核验后才可判定。

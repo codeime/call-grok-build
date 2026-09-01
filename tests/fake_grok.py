@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 import time
 import uuid
@@ -174,53 +173,6 @@ def acp(args: list[str]) -> int:
                     target,
                     ns=(current.st_atime_ns, current.st_mtime_ns + 1_000_000_000),
                 )
-            if "MODIFY_GITDIR" in text:
-                git_dir = Path(
-                    subprocess.run(
-                        ["git", "rev-parse", "--absolute-git-dir"],
-                        cwd=cwd,
-                        check=True,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                    ).stdout.strip()
-                )
-                # Keep this synthetic mutation inside the temporary test
-                # repository.  A linked worktree's admin directory is not
-                # covered by the ordinary status/diff snapshot.
-                (git_dir / "locked").write_text("synthetic lock\n", encoding="utf-8")
-                hooks = git_dir / "hooks"
-                hooks.mkdir(parents=True, exist_ok=True)
-                (hooks / "grok-synthetic-hook").write_text(
-                    "#!/bin/sh\n# synthetic test hook\n", encoding="utf-8"
-                )
-                (git_dir / "config.worktree").write_text(
-                    "[synthetic]\n\tmarker = grok\n", encoding="utf-8"
-                )
-            if "COMMIT_FILE" in text:
-                (cwd / "committed_by_grok.txt").write_text("committed\n", encoding="utf-8")
-                subprocess.run(
-                    ["git", "-C", str(cwd), "add", "committed_by_grok.txt"], check=True
-                )
-                subprocess.run(
-                    ["git", "-C", str(cwd), "commit", "-m", "forbidden fake commit"],
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-            if "CHANGE_PRIMARY" in text:
-                worktrees = subprocess.run(
-                    ["git", "-C", str(cwd), "worktree", "list", "--porcelain"],
-                    check=True,
-                    stdout=subprocess.PIPE,
-                    text=True,
-                ).stdout
-                primary = next(
-                    Path(line.removeprefix("worktree "))
-                    for line in worktrees.splitlines()
-                    if line.startswith("worktree ")
-                )
-                (primary / "changed_from_worker.txt").write_text("changed\n", encoding="utf-8")
             if "MALFORMED_STDOUT" in text:
                 sys.stdout.write("not-json\n")
                 sys.stdout.flush()

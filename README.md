@@ -1,187 +1,173 @@
 # Call Grok Build
 
-一个可分发的 Codex 插件：供 Codex 主代理或具备插件工具访问权的 subagent，把边界明确的研究、计划、代码审查和实现任务交给本机已安装的 Grok Build，再由 Codex 独立核验结果。Grok 的回答和改动始终只是候选结果，不会自动成为最终结论。
+Call Grok Build 是一个 Codex 插件。它让 Codex 主代理或具备插件工具访问权的 Codex subagent，在当前 Codex workspace 中直接启动本机 Grok Build，处理研究、计划、代码审查和实现任务，再由 Codex 独立核验结果。
 
-## 概览
+插件的定位很简单：Grok 在你当前打开的项目目录工作，Codex 负责组织任务、等待结果、运行验证和做最终判断。不会为了委托任务复制项目、创建临时目录或要求用户准备额外 Git 目录。
 
-- Skill 会把自然语言请求整理成范围、约束、验收标准和证据要求明确的任务包。
-- MCP server 负责模型探测、异步任务、状态、结果、取消和收据。
-- `research`、`plan`、`review` 使用只读 sandbox；`implement` 只允许写入干净的 linked Git worktree。
-- 每个 job 使用独立的运行时 attest ACP 进程和全新的任务 ACP 进程；任务 ACP 只有一个新会话和单条 prompt。实现结果必须经过 Codex 独立发起的 `gpt-5.6-luna`、`max` reasoning review。
-- 收据记录模型证据、目录完整性快照、限制条件和验证状态，便于复查。
-- Codex subagent 可直接拥有一次完整调用生命周期；Grok 自己的 subagent/`Agent` 仍被禁用，避免递归委派。
+## 主要行为
+
+- Codex 宿主把当前 workspace 的绝对路径传给插件；Grok 使用同一个目录作为进程 cwd。
+- 所有路由都是 direct。可选的 paths 只用于告诉 Grok 关注哪些相对路径，不是访问控制，也不会把代码复制到另一目录。
+- read-only 任务使用 read-only sandbox；implement 使用 workspace sandbox。Grok 的 terminal 和 Agent 工具始终禁用。
+- bridge 不扫描 Git 或整个目录内容；结果中的 workspace.integrity_snapshot 固定为 not_collected。
+- implement 可以在当前目录直接工作，包括 primary checkout、已有修改和非 Git 目录。Codex 会在任务前记录工作区现状，任务后运行测试，并交给 gpt-5.6-luna 的 max reasoning 做独立 review；bridge 不声称能自动区分哪些修改来自 Grok。
+- 用户明确点名 Grok Build 后，该请求覆盖同一当前 workspace 中完成这次有界流程所需的代码和上下文，不会仅因仓库是私有仓库或内容会发送到 xAI 再次询问。
 
 ## 要求
 
 - 支持插件的 Codex 版本。
-- Python 3.9 或更高版本；插件运行时只使用 Python 标准库。
-- 能在 `PATH` 中调用的 Grok Build CLI（命令名为 `grok`）。
-- 已完成 Grok CLI 登录，并允许 CLI 刷新模型目录及建立 ACP 连接。
-- 只有 `implement` 需要 Git linked worktree；其他模式也可以用于非 Git 目录，但 Git 仓库能提供更完整的变更收据。
+- Python 3.9 或更高版本；运行时只使用 Python 标准库。
+- PATH 中可调用 Grok Build CLI，命令名为 grok。
+- Grok CLI 已登录，并能刷新模型目录及建立 ACP 连接。
 
-先确认 CLI 和登录状态：
+首次使用可以检查：
 
-```bash
+~~~text
 grok --version
 grok login
 grok models
-```
+~~~
 
 ## 安装与更新
 
-1. 获取本插件目录或发布压缩包。插件根目录必须包含 `.codex-plugin/plugin.json`。
-2. 在 Codex 的插件管理界面选择本地目录或压缩包安装。若使用 marketplace，请按宿主的标准流程添加该 marketplace；插件源码路径应相对于 marketplace 根目录，不要把某台机器的绝对路径写进分发配置。
-3. 按 Codex 提示重新加载插件。安装或更新后新建一个 Codex task，确保新 task 加载当前版本。
-4. 更新时替换插件源码或安装新的发布包，不要直接编辑 Codex 生成的缓存目录。
+1. 获取本插件目录或发布压缩包。插件根目录必须包含 .codex-plugin/plugin.json。
+2. 在 Codex 的插件管理界面安装本地目录或压缩包。分发配置只使用相对资源路径，不要把某台机器的绝对路径写进 manifest。
+3. 按 Codex 提示重新加载插件；更新后新建一个 Codex task，确保新 task 加载当前版本。
+4. 不要直接编辑 Codex 生成的缓存目录。
 
-插件本身不会替使用者创建 Git worktree、提交、推送或合并代码；这些操作保留给正常的 Git/Codex 工作流。
+插件不会替用户提交、推送、合并或发布代码。代码是否提交以及如何交付，仍由正常的 Codex/Git 流程决定。
 
 ## 快速开始
 
-在新建的 Codex task 中直接描述委托意图，并给出目标目录的绝对路径：
+在需要委托的 Codex task 中直接描述目标即可。通常不需要手写 cwd，插件会使用当前 workspace：
 
-```text
-使用 Grok Build 只读分析这个项目的架构、主要风险和改进方向。
-项目目录：/path/to/repository
-关键结论由 Codex 独立核验，并区分事实与推断。
-```
+~~~text
+使用 Grok Build review 当前项目的缓存失效逻辑。
+只报告有证据的 finding，给出 file:line、影响和修复建议。
+Codex 随后复现 high/critical 结论。
+~~~
 
-Skill 会依次完成模型 setup、任务提交、状态等待和结果读取。通常不需要手动输入 MCP 工具名；需要了解工具参数或编排方式时，参阅 [使用指南](docs/USAGE.md)。
+只读正常流程是 delegate_readonly 返回 job_id，再由同一个调用者使用 await_result 等待结果。不需要先 setup，也不要因为状态变化反复创建 job。setup 仅用于诊断 CLI 和模型环境。
 
 ## Codex subagent 调用
 
-当 Codex 宿主把本插件的 Skill/MCP tools 暴露给 subagent 时，主代理可以把一个边界明确的任务交给 Codex subagent，由该 subagent 直接完成 `setup`、spawn、等待、取回结果和初步核验，再把收据回传给父任务。插件本身不区分主代理和 subagent 调用者。
+如果宿主把本插件的 Skill/MCP tools 暴露给 Codex subagent，subagent 可以直接持有一次完整调用生命周期：
 
-```text
-让一个 Codex subagent 调用 Grok Build，只读 review 指定范围。
-该 subagent 负责保存并轮询自己的 job_id，完成后回传结果收据和复现证据；
-父任务不要为同一目标重复提交 Grok job。
-项目目录：/path/to/repository
-```
+~~~text
+让一个 Codex subagent 使用 Grok Build review 当前 workspace 的认证边界。
+它负责发起任务、保存准确 job_id、等待终态并回传结果和独立核验证据。
+父任务不要为同一目标重复提交。
+~~~
 
-支持边界：宿主必须确实向该 subagent 提供本插件工具；否则 subagent 只能把任务包交回主代理。连接到同一个 MCP server 的 Codex 调用者共享两个默认异步 job 执行槽位、job 列表和同 worktree 实现锁；`setup` 不占用这些 worker 槽位。若宿主为不同 subagent 启动独立 MCP server，这些进程不会共享 job、correction 链、并发计数或 worktree 锁；subagent 必须在自己的连接中完成整个生命周期，不能把 job ID 交给另一进程继续，并发实现必须使用不同的 linked worktree。每个调用者只操作自己明确持有的 job ID。这里允许的是 Codex subagent 调用，绝不重新启用 Grok 的 `Agent`，也不允许任何一层递归调用本插件。
+主代理和 subagent 使用同一套工具契约。发起调用的代理负责同一 MCP 连接中的 job_id、等待、结果读取和取消；连接结束后不要让其他进程接力旧 job。Grok 自己的 Agent/subagent 始终禁用，任何层都不能递归调用本插件。
 
 ## 四类任务
 
-### 研究
+| 模式 | 用途 | 是否修改当前 workspace |
+| --- | --- | --- |
+| research | 资料研究、事实核查和方案比较 | 否 |
+| plan | 实现拆解、迁移、测试和风险计划 | 否 |
+| review | 代码审查、风险识别和回归检查 | 否 |
+| implement | 在当前 workspace 实现明确变更 | 是 |
 
-```text
-让 Grok Build 研究“目标主题”，只使用可核验来源并返回来源 URL。
-请区分已证实事实、推断和待确认事项；Codex 复核关键来源。
-项目目录：/path/to/repository
-```
+研究示例：
 
-研究默认允许 Grok 的内置 web search；如果不需要联网，可明确要求关闭 web access。
+~~~text
+让 Grok Build 研究目标主题，返回可核验来源 URL。
+区分事实、推断和待确认事项，Codex 复核关键来源。
+~~~
 
-### 计划
+计划示例：
 
-```text
-让 Grok Build 为这个仓库制定实现计划，只读，不修改文件。
-计划必须包含范围、假设、步骤、测试、回滚、风险和验收标准。
-项目目录：/path/to/repository
-```
+~~~text
+让 Grok Build 为当前项目制定实现计划，不修改文件。
+计划包含范围、假设、步骤、测试、回滚、风险和验收标准。
+~~~
 
-### 代码审查
+审查示例：
 
-```text
-让 Grok Build 只读 review 当前代码，只报告有证据的 actionable findings。
-按严重度排序，并提供 file:line、影响和修复建议；Codex 复现 high/critical 结论。
-项目目录：/path/to/repository
-```
+~~~text
+让 Grok Build review 当前代码，只报告有证据的 actionable findings。
+按严重度排序，并给出 file:line、影响和修复建议。
+~~~
 
-### 实现
+实现示例：
 
-先准备一个干净的 linked worktree，再委托写入：
+~~~text
+让 Grok Build 在当前 workspace 实现这个变更。
+只修改完成目标所需的文件，不要提交、推送、合并、变基或调用 Agent。
+完成后 Codex 运行相关测试，并让 gpt-5.6-luna 使用 max reasoning 独立 review 实际 diff。
+~~~
 
-```bash
-git -C /path/to/repository worktree add \
-  /path/to/repository-grok-worktree \
-  -b grok/feature-name
-```
+implement 允许当前目录已有 staged、unstaged 或 untracked 修改，也允许非 Git 目录。开始前和结束后应由 Codex 记录并比较工作区状态；如果 Luna 返回 needs_changes，最多安排一次有明确 parent 的 correction，再做一次 Grok 回归复审和一次 Luna Max 终审。失败、取消、超时或空结果不会自动重试或重新委派。
 
-然后在 Codex 中说明：
+## 调用结构
 
-```text
-在这个干净的 linked worktree 中，让 Grok Build 实现“目标变更”。
-只修改实现所需文件，不要 commit、push、merge、rebase、cherry-pick、reset，
-也不要创建或删除 worktree。完成后由 gpt-5.6-luna 使用 max reasoning 独立 review 实际 diff。
-工作目录：/path/to/repository-grok-worktree
-```
+~~~text
+Codex task（主代理或具备插件工具访问权的 subagent）
+    │ 当前 workspace 的绝对 cwd
+    ▼
+Call Grok Build MCP server
+    ├─ delegate_readonly：research / plan / review
+    ├─ spawn_worker：implement
+    ├─ await_result：有界等待
+    ├─ result：按需读取完整收据
+    └─ cancel：只取消准确 job
+    ▼
+Grok Build CLI / ACP stdio
+    ▼
+当前 workspace 中的 Grok 结果或修改
+    ▼
+Codex 独立核验；实现还需 Luna Max
+~~~
 
-实现模式会禁用 Grok 的 `run_terminal_cmd` 和 `Agent` 工具，因此 Grok 不能运行 shell、解释器、Git 命令或递归代理。实现完成不等于通过：Codex 必须在 Grok 返回后自行运行相关测试，再检查 Luna 的结论、实际 diff 和测试证据；在通过前，结果保持 `unverified`。
-
-## 架构
-
-```text
-Codex task（主代理或具备工具访问权的 subagent）
-   │ Skill：整理范围与验收标准
-   ▼
-Call Grok Build MCP server（内部配置键：grok-build）
-   ├─ setup：刷新目录并进行 ACP 模型 attest
-   ├─ spawn_readonly：research / plan / review
-   └─ spawn_worker：linked-worktree implement
-              │
-              ▼
-       Grok Build CLI / ACP stdio
-              │
-              ▼
-       有界收据 + 公开回答
-              │
-              ▼
-       Codex 独立核验（实现还需 Luna Max）
-```
-
-MCP 工具包括 `setup`、`spawn_readonly`、`spawn_worker`、`status`、`result`、`list` 和 `cancel`。任务状态只存在于当前 MCP server 进程中；进程重启后不会假称恢复进行中的任务。
+每个 job 先启动一次无 session、无 prompt 的 discovery ACP 进程，用于证明 runtime model/effort；随后只启动一个 task ACP 进程，其中只有一个 session 和一条 prompt。discovery 不发送任务包或仓库内容。Codex 可以等待同一 job 的结果，但内部 revision 变化不代表需要重新调用 Grok。正常回答默认限制为 16,000 字符，await_result 默认只带 12,000 字符答案页；需要更长原文时才显式分页读取，避免把大段结果反复塞回 Codex 上下文。
 
 ## 动态模型选择
 
-插件不会把某个 Grok 版本写死，也不会根据版本字符串猜测“最强模型”。`setup` 和每个实际任务都会在目标 `cwd` 刷新 `grok models`，再读取 ACP `initialize._meta.modelState`，使用 provider/runtime default model，并从该模型实际广告的 reasoning effort 中选择最高可排序档位：`xhigh > high > medium > low > none`。当前最高版本由实时目录和 ACP 运行时共同决定，文档和代码都不预设某个版本号。
+插件不写死 Grok 版本，也不根据版本号猜测强弱。每个 job 都刷新 grok models，并通过 ACP initialize 元数据确认 provider/runtime default model，然后从该模型实际广告的 reasoning effort 中选最高档位：
 
-目录默认值与 ACP runtime default 不一致、目录刷新失败或疑似使用缓存、ACP 缺少可验证的模型/effort 元数据、出现未知 effort，都会 fail closed。任务启动时会再次 attest，并核对完成元数据和 model-switch 事件；不会静默 fallback。最高 reasoning effort 优先质量，不代表最低延迟；CLI 若没有可验证的独立 speed/service-tier 控制，插件不会臆造 `fast` 参数。
+~~~text
+xhigh > high > medium > low > none
+~~~
 
-## 交叉验证与可信度
+目录默认模型、ACP runtime default、完成信息或 model-switch 事件不一致时，结果保持未验证并失败关闭。插件不会静默 fallback，也不会臆造 fast 参数；实际模型和 effort 以本次 job 收据为准。
 
-- 研究：Codex 打开并核对决策关键来源；未经支持的说法标为未验证。
-- 计划：Codex 检查范围、假设、迁移/回滚、测试和破坏性风险；高风险计划可再做独立 Luna Max 检查。
-- 代码审查：Codex 从源码和测试复现 high/critical finding；Grok 的 finding 只有在复现后才算确认。
-- 实现：Luna 以只读方式检查原始需求、验收标准、实际 worktree diff 和测试证据；不要只把 Grok 的叙述转交给 reviewer，以降低确认偏差。
-- 一次实现修复流程最多安排一次针对修复结果的 Grok 回归复审，再安排一次 Luna Max 独立终审；两者都不允许递归调用本插件或再次自动委派。
+## 交叉验证
 
-`schema_valid: true` 只表示收据格式正确，不表示事实正确。桥接层返回 `verified: false`，最终判定由 Codex 完成。
+- 研究：Codex 打开并核对关键来源，区分事实、推断和未验证说法。
+- 计划：Codex 检查范围、假设、迁移、回滚、测试和破坏性风险。
+- review：Codex 从源码和测试复现 high/critical finding。
+- implement：Codex 运行测试，检查任务前后实际 diff，再由只读 gpt-5.6-luna、max reasoning 独立 review 原始需求、验收标准、实际 diff 和测试证据。
 
-## 循环与并发限制
+Grok 的答案、finding 和修改都只是候选结果。收据格式正确不等于内容正确；结果在 Codex 完成独立核验前保持 verified: false。
 
-- 一个 job 的运行时 attest 与任务执行使用独立 ACP 进程；任务 ACP 只有一个全新的会话和 prompt。
-- 默认 24 turns，硬上限 48 turns；默认超时 30 分钟，硬上限 60 分钟。
-- job 的执行超时从进入 `running` 开始，覆盖前置/后置快照、CLI 探测、模型 attest 和 ACP 任务；队列等待时间不计入该执行超时。`setup` 使用独立的 120 秒默认截止时间，最大 180 秒。
-- 不自动重试、不自动重新委派；Codex subagent 只可拥有一次明确的调用生命周期，不允许它递归派生插件调用，也不允许 Grok 调用本插件或再创建 Grok/Codex 任务。
-- 实现收到 Luna 的修改意见后，最多允许两轮有明确 parent 的 correction；这是桥接层安全上限，不代表工作流会自动循环。默认流程只安排一次修复复审和一次 Luna Max 终审。
-- 默认最多两个异步 job 同时执行；`setup` 不计入该 worker 上限，同一个 worktree 同时只能有一个实现任务。
+## 循环、并发和停止
 
-达到 turn/output 限制、超时、取消或模型切换时，任务停止并报告状态；不会以部分结果冒充成功。正常取消或 MCP 关闭会清理对应的子进程组；如果宿主遭遇 SIGKILL 或崩溃，清理代码无法运行，仍可能残留孤儿 Grok 进程，不能把本插件描述成绝对的父子进程存活保证。实现任务即使取消或超时，也应检查 worktree，因为进程终止不会自动回滚文件。
+- 同一个 workspace 同时只允许一个活动 implement job；read-only job 可以并行。
+- 每个 job 默认 24 turns、默认 30 分钟；硬上限分别为 48 turns 和 60 分钟。输出有独立上限。
+- 单 job 只有一个 ACP prompt；自动重试和自动重新委派为零。
+- Luna 发现问题后最多一次 correction 和一次回归复审；这不是循环许可。
+- cancel 只终止准确 job 创建的进程组，不使用模糊进程匹配。
+- 取消、超时、模型切换、turn/output limit、空回答或 MCP 进程关闭都不会被报告为成功。
+
+结果 envelope 为 grok.codex.result.v2。workspace.integrity_snapshot 为 not_collected；这表示 bridge 不冒充变更归因，implement 的变更核验由 Codex 依据任务前后状态、测试和独立 review 完成。
 
 ## 数据边界
 
-Grok Build 在本机执行工具，但 prompt 和选中的代码上下文会发送到 xAI。不要委托密钥、cookie、token、`.env`、SSH 私钥、证书、生产凭据、无关个人目录或未经授权的第三方私有代码。使用窄范围的目标目录；桥接层拒绝文件系统根目录和 home 目录作为 `cwd`。
+Grok CLI 在本机运行，但 prompt、被选择的代码上下文和模型服务请求会发送到 xAI。不要把密钥、cookie、token、.env、SSH 私钥、证书、生产凭据、客户数据或无关个人资料放进任务范围。bridge 使用最小环境变量，拒绝向 worker 转发常见认证变量，并在公开收据、错误和输出中做凭据与账号路径脱敏。
 
-桥接层不会把目标目录的绝对路径重复写进任务 prompt，公开的 setup、status 和 result 收据也只使用 `.` 作为目标标签，并对 Git 分支和 worktree 位置保留哈希或计数。所有公开字符串和嵌套字段会在序列化前统一经过凭据形状脱敏，覆盖常见 URL query token、带日志前缀的认证头、JSON 字符串/数组/对象凭据、URL userinfo、账号路径和邮箱；这仍只是纵深防御。不过，Grok CLI 为了在目标目录执行，仍会在本机进程参数和 ACP session 中接收真实 `cwd`；被选择的文件名、代码和命令输出也可能暴露仓库身份。不要把输出脱敏误解为内容匿名化。
-
-`cwd` 必须是具体项目或资料子目录。除文件系统根目录和当前 home 外，桥接层还拒绝账号目录父级、其他账号的 home、整个临时目录以及常见系统配置/程序目录；需要临时测试时应创建一个独立子目录，而不是把 `/tmp` 或等价目录本身作为目标。
-
-只读任务会比较 Git 仓库的 HEAD/ref、worktree、tracked diff 以及 untracked/ignored 内容；非 Git 目录则执行不跟随符号链接的有界文件树快照，覆盖内容、元数据和目录结构。每次任务还会先对准确 `cwd` 做 20,000 条目的 scope scan：顶层 `.git` 仅允许真实目录或 regular pointer，符号链接、悬空链接和指向 `cwd` 外部的链接都会失败关闭。完整的 non-Git、untracked、ignored 与普通 Git 管理区内容扫描采用 20,000 条目/128,000,000 字节边界；tracked symlink 扫描另有 200,000 条目上限；Git object database 会完整哈希最多 200,000 条目/512,000,000 字节，并拒绝 alternates。
-
-Git diff 明确禁用 external diff 和 textconv；仓库只要配置了 include/includeIf、外部 attributes/excludes/hooks/worktree 路径或 clean/smudge/process filter，就以 `E_GIT_CONFIG_EXTERNAL` 停止，避免快照阶段使用仓库外 helper。Git 报告的根目录也必须是 `cwd` 的真实祖先，否则返回 `E_GIT_SCOPE`。`.git` 指针及 common/admin 管理区（包括 index、lock、hooks、config、refs、logs、worktrees 和对象内容）单独纳入完整性证据；管理区变化会以 `E_GIT_ADMIN_CHANGED` 失败关闭。上述边界采用“等于上限可接受、超过即拒绝”的规则。
-
-详细的读取、写入、凭据、prompt injection 和失败处理规则见 [安全边界](docs/SECURITY.md)。
+文件名和内容仍可能暴露项目身份；脱敏不是内容匿名化。任务应使用当前 workspace 中与目标直接相关的范围。paths 只能提示 Grok 关注范围，不能替代敏感文件判断。
 
 ## 故障排查与开发
 
-- setup、登录、模型目录、ACP 或任务状态问题：参阅 [故障排查](docs/TROUBLESHOOTING.md)。
-- 本地测试、真实 smoke test、MCP stdio 调试和发布检查：参阅 [开发与测试](docs/DEVELOPMENT.md)。
-- 工具参数、任务包模板和收据解释：参阅 [使用指南](docs/USAGE.md)。
+- CLI、登录、模型目录、ACP 或任务状态问题：参阅 [故障排查](docs/TROUBLESHOOTING.md)。
+- 工具参数、任务包和收据解释：参阅 [使用指南](docs/USAGE.md)。
+- 本地测试、MCP stdio 调试和发布检查：参阅 [开发与测试](docs/DEVELOPMENT.md)。
+- 数据、文件和进程边界：参阅 [安全边界](docs/SECURITY.md)。
 
 最小单元测试入口：
 
-```bash
-python3 -Wd -m unittest discover -s tests -v
-```
+~~~text
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -q
+~~~

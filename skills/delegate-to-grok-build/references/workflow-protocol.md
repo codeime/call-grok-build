@@ -1,66 +1,90 @@
 # 工作流协议
 
-在选择工具、构造任务包、等待任务或解释结果收据时阅读本文。
+本文说明 Codex 如何调用 grok-build MCP server、等待结果和处理 v2 收据。日常任务使用当前 Codex workspace，Grok 在同一 cwd 原生运行。
+
+## 核心规则
+
+- 用户明确点名 Grok Build 且目标是当前 workspace 时，不要重复询问私有仓库或 xAI 外发授权。
+- Codex 宿主自动传入当前 workspace 的绝对 cwd；所有任务都使用 direct。
+- 不复制代码、不建立额外目录、不做 Git 或全目录内容扫描。
+- 可选 paths 只提示 prompt 的关注范围，不改变 cwd 或访问控制。
+- 一个 job 只有一个生命周期负责人、一次无 session/prompt 的 discovery ACP 模型证明，以及一个单 session/单 prompt 的 task ACP 进程。
+- 失败、超时、取消、模型切换或限制达到后不自动重试或重新委派。
 
 ## 工具契约
 
-- `setup(cwd, timeout_seconds)`：在 `cwd` 刷新实时模型目录，再执行仅初始化的 ACP preflight。可选 timeout 范围为 10..180 秒、默认 120 秒，同一 deadline 覆盖 catalog probes 与 ACP runtime attestation。它证明 provider/runtime default model，并选择该模型实际广告的最高、可确定排序的 effort。目录过期/离线/仅缓存、默认值含糊、缺少 ACP model state、effort 不支持或无法排序、catalog/ACP 不一致时失败关闭。
-- `spawn_readonly(task, cwd, mode)`：请求 OS 级 `read-only` sandbox，且运行时只接受 `research`、`plan` 或 `review`。不暴露 Grok subagents 或可用的外部 MCP server。可选字段包括 `web_access`、`timeout_seconds`、`max_turns` 和 `max_output_chars`；只有确实需要来源研究时才启用 web access。
-- `spawn_worker(task, cwd)`：在 `workspace` sandbox 中异步执行实现。首次 job 要求目标是干净的 linked Git worktree；这些校验在 job 的 `running` 阶段完成，失败会进入 `failed` 终态。Grok 的 `run_terminal_cmd` 和 `Agent` 被禁用，只能用文件工具修改；测试由 Codex 在返回后执行。correction 必须把 `correction_of_job_id` 设为紧邻的上一个成功 worker job；bridge 会验证 parent 快照未变，并限制 correction 链最多两轮。每个实现结果都带 `review_required: true`。
-- `status(job_id)`：返回生命周期元数据，不返回可能很大的回答。
-- `result(job_id, offset, limit)`：返回已完成的收据和有界的公开回答分页；只在确有必要时请求后续页。
-- `list(limit)`：列出内存中的 job。活动 job 不保证在 MCP server 重启后继续存在。
-- `cancel(job_id)`：只终止这个准确 job 所拥有的进程组。
+### delegate_readonly
 
-`setup` 与选定任务必须使用同一个绝对 `cwd`。默认并发数是两个异步 job worker；`setup` 不走该 executor，也不占用这两个槽位。写入任务会锁定目标 worktree，防止当前 server 的另一个写入任务同时使用。job 默认执行超时 30 分钟、硬上限 60 分钟，从 `running` 开始且不包含排队时间；它覆盖 scope/content snapshot、Git、probe、attest 和 ACP。默认 turns 为 24，硬上限 48。
+delegate_readonly(task, cwd, mode, paths?) 是研究、计划和 review 的高阶只读入口，立即返回 job_id。mode 只能是 research、plan 或 review。cwd 是宿主当前 workspace 的绝对路径；用户通常不需要手写它。
 
-## Codex 调用者与并发
+paths 可省略，也可提供非空相对路径列表。它只用于让 Grok 聚焦 prompt，不改变 direct 路由，不复制文件，不产生独立访问边界。
 
-插件的 MCP 工具不绑定“主代理”身份。只要 Codex 宿主把这些工具提供给当前 subagent，主代理或 subagent 都可以直接调用；宿主没有暴露工具时，subagent 必须把任务包交回主代理，不能伪装成已执行。
+每个 job 在启动时刷新实时模型目录，并通过 ACP initialize 证明 provider/runtime default model 及该模型最高 advertised reasoning effort。
 
-发起 spawn 的 Codex 调用者应拥有该 job 的完整生命周期：在同一 MCP server 连接中保存准确 `job_id`，只查询、读取或取消这个 job，并向父任务返回收据。`list` 和 job 状态属于同一个 MCP server 的共享内存；同一任务内的受信任 Codex 调用者可能看到彼此 job，因此不要把 `list` 当作调用者隔离，也不要让同级 subagent 共享或猜测 job ID。默认两个异步 job worker 槽位在同一 server 的调用者之间共享，超出的 job 排队；`setup` 不占用这些槽位。同一进程内的 worktree implement 锁和 correction 链规则不会因调用者不同而放宽。
+### spawn_readonly
 
-若 Codex 宿主为每个 subagent 启动独立 MCP server，则每个进程都有独立的内存 job manager：旧 `job_id` 在另一进程中不可查询，server 连接关闭会取消其活动 job，correction parent 也不能跨进程引用。跨进程的并发计数和 worktree 锁不共享，因此多个并行 implement 调用者必须使用不同的 linked worktree；不要依赖另一个进程返回 `E_WORKTREE_BUSY`。
+spawn_readonly(task, cwd, mode) 是兼容入口，只接受 research、plan 或 review。新调用优先使用 delegate_readonly。
 
-一个父任务只能为同一个有界目标指定一个生命周期负责人。父代理不得在 subagent 已经 spawn 后再次提交相同任务，subagent 也不得再派生一个调用本插件的 subagent。Codex subagent 调用与 Grok subagents 是两件事：前者受宿主工具暴露能力控制，后者在 CLI 层始终禁用。
+### spawn_worker
 
-## 模型和 effort 选择
+spawn_worker(task, cwd) 启动 implement 任务，直接在当前 workspace 使用 workspace sandbox。它允许 primary checkout、已有 staged/unstaged/untracked 修改和非 Git 目录。Grok 只能使用文件工具，terminal、解释器、Git、测试、Agent 和外部 MCP 均禁用。
 
-bridge 不根据模型名字推断强弱，也不把某个版本号写死。每个目标都会刷新 CLI catalog，确认 provider/runtime default model，再从该模型实际广告的 reasoning effort 中选择最高档位，并把这两个值锁定到任务调用中。第二次 ACP initialize attest、任务完成元数据（如果提供）和 model-switch 事件都会与选择值核对。任何 fallback 警告、不一致或模型切换都让结果保持未验证并失败关闭。
+correction_of_job_id 只用于 Luna 指出的那一次有界修复，必须指向同一 cwd、紧邻且成功的 implement job。最多一次 correction；失败 job 不能作为 parent。
 
-## 任务包
+### await_result
 
-保持 prompt 有边界并明确：
+await_result(job_id, after_revision, max_wait_seconds, offset, limit) 对准确 job 做有界等待。短任务一次等到终态；长任务只在这次等待超时后继续等待同一个 job。running 或 model revision 变化不会触发新 job，终态调用幂等。offset/limit 只用于答案分页。
 
-```text
-Goal:
-Scope (directories/files):
-Constraints:
-Acceptance criteria:
-Evidence/output required:
-```
+### setup
 
-实现任务要补充文件归属，并说明 commit 和 push 不在范围内。审查任务要求带严重度和 `file:line` 证据的 actionable findings。研究任务要求直接来源 URL，并分别标记事实和推断。不要包含秘密或无关上下文。
+setup(cwd, timeout_seconds) 是可选诊断，用于刷新模型目录和进行无 prompt ACP 初始化证明。每个实际 job 仍会自己证明模型，因此正常流程不需要先 setup。
 
-## 生命周期和停止条件
+### status、result、list、cancel
 
-启动后以大约 10–30 秒的间隔查询 `status`，并在 job 截止时间前停止。进入终态后：
+- status 返回准确 job 的 compact 生命周期状态，适合低频诊断；
+- result 返回完整幂等 v2 收据和分页答案；
+- list 只列出当前 MCP server 进程内的 job；
+- cancel 只终止准确 job 创建的进程组，不使用模糊进程匹配。
 
-- `succeeded`：读取 `result`，检查收据，并执行独立验证门槛；
-- `failed`、`timed_out` 或 `cancelled`：检查错误和目标状态，不要把部分输出当作可接受结果。
+发起 job 的调用者必须在同一 MCP 连接中保存 job_id、等待、取回收据和取消。不同 MCP 进程之间不能接力旧 job。
 
-自动重试和自动重新委派均为零。模型切换、turn limit、output limit、超时、空回答或进程重启都是停止条件。Luna 发现问题后的 correction 是一个新的、有明确 parent 的 worker job，不是重试，并且只能在两轮 correction 安全上限内进行。产品流程最多安排一次 Grok 修复回归复审和一次 Luna Max 独立终审；Codex subagent 可以作为一次生命周期负责人，但不得递归调用本插件。
+## 模型与 sandbox
+
+bridge 不写死 Grok 版本，也不根据版本字符串猜测强弱。实际 model 由 catalog 和 ACP runtime default 共同证明，reasoning effort 取该模型实际广告的最高档位：
+
+~~~text
+xhigh > high > medium > low > none
+~~~
+
+catalog、ACP、完成信息或 model-switch 不一致，或出现 fallback、未知 effort、空结果时，任务失败关闭或保持 unverified。
+
+research、plan、review 使用 read-only sandbox；implement 使用 workspace sandbox。所有任务显式禁用真实工具 ID run_terminal_cmd 和 Agent，防止 Grok 递归调用本插件或其他代理。
+
+## Codex subagent
+
+如果宿主向 Codex subagent 暴露本插件工具，subagent 可以直接成为一次 job 的生命周期负责人；否则它应把任务包交回主代理。父任务不要让多个调用者为同一目标重复发起。
+
+Codex subagent 和 Grok subagent 是两件事：前者可作为插件调用者，后者始终禁用。插件不检查主代理身份，但每个调用者只操作自己准确持有的 job_id。
+
+## 实现后的核验
+
+Codex 任务前记录当前 workspace 状态，Grok 完成后检查实际 diff、运行测试，再让只读 gpt-5.6-luna 使用 max reasoning 独立 review 原始需求、验收标准、实际 diff 和测试证据。bridge 不声称能区分任务前已有修改与 Grok 新增修改。
+
+如果 Luna 返回 needs_changes，最多创建一次带 parent 的 correction，并完成一次 Grok 回归复审和一次 Luna Max 终审。第二次仍需修改时停止并报告 unverified。
 
 ## 收据
 
-结果使用 `grok.codex.result.v1` envelope。收据记录 job/session 身份、生命周期和停止原因、动态选择的 model/effort、catalog 与 ACP 证据、脱敏目标标签（`.`）、sandbox、有界回答和诊断、可用时的 usage，以及 loop guard。
+结果使用 grok.codex.result.v2。收据至少记录：
 
-Git 收据记录 HEAD 身份、哈希化的 branch/worktree 身份、worktree 数量、status/diff hash、untracked/ignored 内容指纹，并记录有界的 Git admin/object 指纹、变化文件、primary-checkout 对比和工作区证据。非 Git 只读任务记录有界文件树完整性证据。绝对 Git 根目录和 checkout 路径不会出现在公开收据中。correction 链记录 root、parent、round 和两轮上限。
+- job/session、status、mode、route、公开 cwd 标签；
+- model、reasoning_effort、model_evidence、sandbox 和 memory_policy；
+- loop_guard、correction_chain、stop_reason、usage 和 errors；
+- answer 及其分页信息；
+- workspace.integrity_snapshot: not_collected；
+- verification.schema_valid、review_required 和 verified。
 
-每次 job 先对 exact cwd 做 20,000 条目的 metadata-only scope preflight；顶层 `.git` 只允许真实目录或 regular pointer，symlink/越界/悬空目标被拒绝。non-Git、untracked、ignored 和普通 Git admin 内容扫描为 20,000 条目/128,000,000 字节；tracked symlink scan 为 200,000 条目；Git object database 为 200,000 条目/512,000,000 字节。Git root 必须是 `cwd` 的真实祖先；Git diff 禁用 ext-diff/textconv，config include/外部 path/filter 与 object alternates 被拒绝，index/locks 纳入指纹。等于边界可接受，超过即失败关闭；Git 命令输出另有硬上限。`.git` pointer 或 common/worktree admin/object 证据变化会以 `E_GIT_ADMIN_CHANGED` 失败关闭。
+schema_valid 只表示 envelope 格式正确。verified 只有 Codex 完成独立核验后才可判定。
 
-`schema_valid: true` 只表示 envelope 结构正确；bridge 有意返回 `verified: false`，实现收据还会暴露 `review_required: true`。只有 Codex 的独立检查（实现任务还包括必需的 Luna Max review）才能支持最终的 verified 结论。
+## 停止条件
 
-## 进程清理
-
-准确的 `cancel` 或 MCP server 正常关闭会尝试清理对应进程组。宿主被 SIGKILL、崩溃或断电时，清理代码无法运行，仍可能残留孤儿 Grok 进程；这是已知残余风险。不要使用 `pkill`、`killall` 或模糊进程匹配，也不要因孤儿进程自动重试或重新委派。
+遇到失败、超时、取消、ACP 异常、模型 fallback/switch、turn/output 上限、空回答或 MCP 进程关闭时，停止使用该结果。不要改路由、再开 job 或把部分输出当作成功。
