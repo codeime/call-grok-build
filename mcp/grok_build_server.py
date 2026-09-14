@@ -468,7 +468,7 @@ TOOLS: List[Dict[str, Any]] = [
     ),
     _tool(
         "status",
-        "Return grok.codex.result.v2 compact lifecycle metadata for one exact Grok job ID, including native-direct workspace evidence, model attestation, sandbox, loop guards, revision, route, and result availability.",
+        "Return grok.codex.result.v2 compact lifecycle metadata for one exact Grok job ID, including phase, live duration_ms, phase_timings_ms, last_update_type and last_activity_age_ms, alongside native-direct workspace evidence, model attestation, sandbox, loop guards, revision, route, and result availability. Activity names are safe ACP event types, not tool progress or arguments; terminal timings are frozen. Diagnostic use only; do not poll at high frequency.",
         {
             "type": "object",
             "properties": {"job_id": {"type": "string", "format": "uuid"}},
@@ -479,7 +479,7 @@ TOOLS: List[Dict[str, Any]] = [
     ),
     _tool(
         "await_result",
-        "Bounded long-poll for one exact job ID. Waits at most 1..60 seconds for a terminal state, manager/server close, or the wait timeout. Routine running/model revision changes do not complete the wait. The response reports whether the wait timed out and whether revision is newer than after_revision. Terminal calls are idempotent. Do not start another Grok job because an internal revision changed. Normal short flow: delegate_readonly then one await_result. Long jobs repeat await_result only after a wait timeout.",
+        "Bounded long-poll for one exact job ID. Waits at most 1..60 seconds for a terminal state, manager/server close, or the wait timeout. Routine running/model revision changes do not complete the wait. The response includes phase, live duration_ms, phase_timings_ms and safe ACP activity metadata, and reports whether the wait timed out and whether revision is newer than after_revision. Terminal timings are frozen and terminal calls are idempotent. Do not start another Grok job because an internal revision changed. Normal short flow: delegate_readonly then one await_result. Long jobs repeat await_result only after a wait timeout. Default wait remains 30 seconds; choose 60 only after confirming the host tool timeout allows it with response overhead.",
         {
             "type": "object",
             "properties": {
@@ -495,6 +495,7 @@ TOOLS: List[Dict[str, Any]] = [
                     "minimum": MIN_AWAIT_SECONDS,
                     "maximum": MAX_AWAIT_SECONDS,
                     "default": DEFAULT_AWAIT_SECONDS,
+                    "description": "Keep within the host MCP tool timeout, allowing response overhead. Use 60 only when host support has been confirmed; otherwise keep the default or a shorter bounded wait.",
                 },
                 "offset": {"type": "integer", "minimum": 0, "default": 0},
                 "limit": {

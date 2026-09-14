@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -41,6 +42,23 @@ from grok_build_bridge import (  # noqa: E402
 
 FAKE_GROK = PLUGIN_ROOT / "tests" / "fake_grok.py"
 SYNTHETIC_EMAIL = "reviewer" + "@" + "example.invalid"
+PROGRESS_FIELDS = (
+    "phase",
+    "duration_ms",
+    "phase_timings_ms",
+    "last_update_type",
+    "last_activity_age_ms",
+)
+PROGRESS_SECRETS = (
+    "SYNTHETIC_PROGRESS_TITLE",
+    "SYNTHETIC_PROGRESS_PATH",
+    "SYNTHETIC_PROGRESS_ARGUMENT",
+    "SYNTHETIC_PROGRESS_THOUGHT",
+    "SYNTHETIC_PROGRESS_UNKNOWN",
+    "SYNTHETIC_PROGRESS_UNKNOWN_ARGUMENT",
+    "SYNTHETIC_PROGRESS_UPDATE_TITLE",
+    "SYNTHETIC_PROGRESS_UPDATE_ARGUMENT",
+)
 
 
 def run_git(cwd: Path, *args: str) -> str:
@@ -450,6 +468,11 @@ class DirectCwdBridgeTests(unittest.TestCase):
                 second = manager.spawn(
                     mode="implement", task="CREATE_FILE", cwd=str(target)
                 )
+                queued = manager.status(second["job_id"])
+                self.assertEqual(queued["phase"], "queued", queued)
+                self.assertIsNone(queued["duration_ms"])
+                self.assertIn("queued", queued["phase_timings_ms"])
+                self.assertIsNone(queued["last_update_type"])
                 target.rename(detached)
                 target.symlink_to(victim, target_is_directory=True)
                 status = wait_terminal(manager, second["job_id"], timeout=15)
@@ -545,6 +568,202 @@ class DirectCwdBridgeTests(unittest.TestCase):
                 self.assertEqual(len(manager.list()["jobs"]), 1)
             finally:
                 manager.close()
+
+    def test_live_progress_is_safe_and_freezes_across_views(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = JobManager(max_workers=1)
+            try:
+                spawned = manager.spawn(
+                    mode="research", task="FAKE_PROGRESS", cwd=directory
+                )
+                deadline = time.monotonic() + 10
+                live = None
+                while time.monotonic() < deadline:
+                    candidate = manager.status(spawned["job_id"])
+                    if (
+                        candidate["status"] == "running"
+                        and candidate["phase"] == "running"
+                        and candidate["last_update_type"] == "tool_call_update"
+                    ):
+                        live = candidate
+                        break
+                    self.assertNotIn(
+                        candidate["status"],
+                        {"succeeded", "failed", "timed_out", "cancelled"},
+                        candidate,
+                    )
+                    time.sleep(0.01)
+                self.assertIsNotNone(live)
+                assert live is not None
+                self.assertIsNotNone(live["duration_ms"])
+                self.assertIsNotNone(live["last_activity_age_ms"])
+                self.assertGreaterEqual(live["last_activity_age_ms"], 0)
+                self.assertEqual(
+                    set(live["phase_timings_ms"]),
+                    {"queued", "probe", "discovery", "prompting", "running"},
+                )
+                live_json = json.dumps(live, sort_keys=True)
+                for secret in PROGRESS_SECRETS:
+                    self.assertNotIn(secret, live_json)
+
+                live_duration_ms = live["duration_ms"]
+                live_running_ms = live["phase_timings_ms"]["running"]
+                live_activity_age_ms = live["last_activity_age_ms"]
+                timed_out = manager.await_result(
+                    spawned["job_id"],
+                    after_revision=live["revision"],
+                    max_wait_seconds=1,
+                )
+                self.assertTrue(timed_out["wait_timed_out"], timed_out)
+                self.assertEqual(timed_out["job_id"], spawned["job_id"])
+                self.assertEqual(timed_out["status"], "running")
+                self.assertEqual(timed_out["phase"], "running")
+                self.assertIsNotNone(timed_out["duration_ms"])
+                self.assertEqual(timed_out["last_update_type"], "tool_call_update")
+                self.assertGreater(timed_out["duration_ms"], live_duration_ms)
+                self.assertGreater(
+                    timed_out["phase_timings_ms"]["running"], live_running_ms
+                )
+                self.assertGreater(
+                    timed_out["last_activity_age_ms"], live_activity_age_ms
+                )
+                self.assertEqual(len(manager.list()["jobs"]), 1)
+
+                terminal = wait_terminal(manager, spawned["job_id"], timeout=10)
+                status_after = manager.status(spawned["job_id"])
+                awaited_after = manager.await_result(
+                    spawned["job_id"],
+                    after_revision=terminal["revision"],
+                    max_wait_seconds=1,
+                )
+                result = manager.result(spawned["job_id"])
+                self.assertEqual(terminal["status"], "succeeded", terminal)
+                self.assertEqual(status_after["phase"], "running")
+                self.assertEqual(
+                    status_after["last_update_type"], "agent_message_chunk"
+                )
+                for field in PROGRESS_FIELDS:
+                    self.assertEqual(status_after[field], awaited_after[field], field)
+                    self.assertEqual(status_after[field], result[field], field)
+                self.assertEqual(status_after["duration_ms"], terminal["duration_ms"])
+                self.assertIsNotNone(status_after["duration_ms"])
+                final_json = json.dumps(
+                    {field: status_after[field] for field in PROGRESS_FIELDS},
+                    sort_keys=True,
+                )
+                for secret in PROGRESS_SECRETS:
+                    self.assertNotIn(secret, final_json)
+
+                with mock.patch.object(bridge.time, "monotonic", return_value=10_000.0):
+                    frozen_later = manager.status(spawned["job_id"])
+                for field in PROGRESS_FIELDS:
+                    self.assertEqual(status_after[field], frozen_later[field], field)
+            finally:
+                manager.close()
+
+    def test_no_activity_keeps_progress_activity_fields_null(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = JobManager(max_workers=1)
+            try:
+                spawned = manager.spawn(
+                    mode="review", task="EMPTY_RESPONSE", cwd=directory
+                )
+                terminal = wait_terminal(manager, spawned["job_id"])
+                result_view = manager.result(spawned["job_id"])
+            finally:
+                manager.close()
+        self.assertEqual(terminal["status"], "failed", terminal)
+        for payload in (terminal, result_view):
+            self.assertIsNone(payload["last_update_type"], payload)
+            self.assertIsNone(payload["last_activity_age_ms"], payload)
+
+    def test_job_progress_timings_freeze_without_counting_queue(self) -> None:
+        job = bridge.Job(
+            job_id="00000000-0000-4000-8000-000000000001",
+            mode="review",
+            cwd="/tmp/project",
+            timeout_seconds=30,
+            max_output_chars=1_000,
+            web_access=False,
+            max_turns=1,
+            cwd_fd=None,
+            task="test",
+            _created_monotonic=0.0,
+        )
+        with mock.patch.object(bridge.time, "monotonic", return_value=2.0):
+            queued = job.progress_view()
+        self.assertEqual(queued["phase"], "queued")
+        self.assertIsNone(queued["duration_ms"])
+        self.assertEqual(queued["phase_timings_ms"], {"queued": 2_000})
+
+        job._started_monotonic = 2.0
+        job.set_phase("probe", now=2.0)
+        job.set_phase("discovery", now=3.0)
+        job.set_phase("prompting", now=4.0)
+        job.set_phase("running", now=5.0)
+        job.last_update_type = "tool_call_update"
+        job._last_activity_monotonic = 6.0
+        job.freeze_progress(now=8.0)
+        frozen = job.progress_view()
+        self.assertEqual(frozen["phase"], "running")
+        self.assertEqual(frozen["duration_ms"], 6_000)
+        self.assertEqual(
+            frozen["phase_timings_ms"],
+            {
+                "queued": 2_000,
+                "probe": 1_000,
+                "discovery": 1_000,
+                "prompting": 1_000,
+                "running": 3_000,
+            },
+        )
+        self.assertEqual(frozen["last_activity_age_ms"], 2_000)
+        job.freeze_progress(now=99.0)
+        with mock.patch.object(bridge.time, "monotonic", return_value=10_000.0):
+            self.assertEqual(job.progress_view(), frozen)
+
+    def test_acp_activity_callback_allows_only_safe_update_types(self) -> None:
+        activity_types = []
+        client = bridge.ACPClient(
+            command=[],
+            cwd=Path("/tmp"),
+            cwd_fd=None,
+            cancel_event=threading.Event(),
+            output_limit=1_000,
+            process_callback=lambda _process: None,
+            activity_callback=activity_types.append,
+        )
+        updates = (
+            {
+                "sessionUpdate": "tool_call",
+                "title": "SYNTHETIC_TOOL_TITLE",
+                "arguments": {"path": "SYNTHETIC_TOOL_ARGUMENT"},
+            },
+            {
+                "sessionUpdate": "agent_thought_chunk",
+                "content": {"type": "text", "text": "SYNTHETIC_THOUGHT"},
+            },
+            {
+                "sessionUpdate": "unknown_SYNTHETIC_UNKNOWN_TYPE_SECRET",
+                "title": "SYNTHETIC_UNKNOWN_TITLE",
+                "arguments": "SYNTHETIC_UNKNOWN_ARGUMENT",
+            },
+            {
+                "sessionUpdate": "tool_call_update",
+                "title": "SYNTHETIC_TOOL_UPDATE_TITLE",
+                "arguments": {"secret": "SYNTHETIC_TOOL_UPDATE_ARGUMENT"},
+            },
+        )
+        for update in updates:
+            client._handle_message(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {"update": update},
+                }
+            )
+        self.assertEqual(activity_types, ["tool_call", "tool_call_update"])
+        self.assertNotIn("SYNTHETIC", json.dumps(activity_types))
 
     def test_cancel_stops_exact_active_job(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

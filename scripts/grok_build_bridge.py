@@ -52,6 +52,19 @@ MIN_AWAIT_SECONDS = 1
 MAX_AWAIT_SECONDS = 60
 PROBE_CACHE_SECONDS = 300
 ROUTE_DIRECT = "direct"
+JOB_PHASES = {"queued", "probe", "discovery", "prompting", "running"}
+PUBLIC_ACTIVITY_UPDATE_TYPES = {
+    "agent_message_chunk",
+    "tool_call",
+    "tool_call_update",
+    "plan",
+    "available_commands_update",
+    "current_mode_update",
+    "config_option_update",
+    "usage_update",
+    "model_changed",
+    "model_auto_switched",
+}
 SENSITIVE_SCOPE_HINT_NAMES = {
     ".env",
     ".netrc",
@@ -1520,6 +1533,9 @@ class ACPClient:
         output_limit: int,
         process_callback: Callable[[subprocess.Popen[bytes]], None],
         redaction_paths: Sequence[str] = (),
+        *,
+        phase_callback: Optional[Callable[[str], None]] = None,
+        activity_callback: Optional[Callable[[str], None]] = None,
     ) -> None:
         self.command = list(command)
         self.cwd = cwd
@@ -1528,6 +1544,8 @@ class ACPClient:
         self.output_limit = output_limit
         self.process_callback = process_callback
         self.redaction_paths = list(redaction_paths)
+        self.phase_callback = phase_callback
+        self.activity_callback = activity_callback
         self.proc: Optional[subprocess.Popen[bytes]] = None
         self._next_id = 1
         self._pending: Dict[int, queue.Queue[Dict[str, Any]]] = {}
@@ -1584,6 +1602,14 @@ class ACPClient:
         if message.get("method") == "session/update":
             update = (message.get("params") or {}).get("update") or {}
             update_type = update.get("sessionUpdate")
+            if (
+                isinstance(update_type, str)
+                and update_type in PUBLIC_ACTIVITY_UPDATE_TYPES
+                and self.activity_callback is not None
+            ):
+                # Only a bounded protocol event name crosses this boundary.
+                # Never expose thoughts, tool arguments, titles or raw updates.
+                self.activity_callback(update_type)
             if update_type == "agent_message_chunk":
                 content = update.get("content") or {}
                 if isinstance(content.get("text"), str):
@@ -1951,6 +1977,8 @@ class ACPClient:
             session_id = session.get("sessionId")
             if not isinstance(session_id, str) or not session_id:
                 raise BridgeError("E_ACP_SESSION", "Grok ACP did not return a session ID.")
+            if self.phase_callback is not None:
+                self.phase_callback("running")
             completion = self.request(
                 "session/prompt",
                 {"sessionId": session_id, "prompt": [{"type": "text", "text": prompt}]},
@@ -2169,6 +2197,14 @@ class Job:
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     duration_ms: Optional[int] = None
+    phase: str = "queued"
+    last_update_type: Optional[str] = None
+    _created_monotonic: float = field(default_factory=lambda: time.monotonic(), repr=False)
+    _started_monotonic: Optional[float] = field(default=None, repr=False)
+    _finished_monotonic: Optional[float] = field(default=None, repr=False)
+    _phase_started_monotonic: float = field(default=0.0, init=False, repr=False)
+    _phase_durations_seconds: Dict[str, float] = field(default_factory=dict, repr=False)
+    _last_activity_monotonic: Optional[float] = field(default=None, repr=False)
     result: Optional[Dict[str, Any]] = None
     errors: List[Dict[str, str]] = field(default_factory=list)
     cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
@@ -2181,6 +2217,57 @@ class Job:
     updated: threading.Condition = field(
         default_factory=threading.Condition, repr=False
     )
+
+    def __post_init__(self) -> None:
+        self._phase_started_monotonic = self._created_monotonic
+
+    def set_phase(self, phase: str, now: Optional[float] = None) -> None:
+        """Called under the manager lock; terminal jobs retain their last phase."""
+        if phase not in JOB_PHASES:
+            raise ValueError("Unknown job phase.")
+        if self._finished_monotonic is not None or phase == self.phase:
+            return
+        current = time.monotonic() if now is None else now
+        self._phase_durations_seconds[self.phase] = (
+            self._phase_durations_seconds.get(self.phase, 0.0)
+            + max(0.0, current - self._phase_started_monotonic)
+        )
+        self.phase = phase
+        self._phase_started_monotonic = current
+
+    def freeze_progress(self, now: Optional[float] = None) -> None:
+        if self._finished_monotonic is not None:
+            return
+        self._finished_monotonic = time.monotonic() if now is None else now
+        if self._started_monotonic is not None:
+            self.duration_ms = int(
+                max(0.0, self._finished_monotonic - self._started_monotonic) * 1_000
+            )
+
+    def progress_view(self) -> Dict[str, Any]:
+        current = (
+            self._finished_monotonic
+            if self._finished_monotonic is not None
+            else time.monotonic()
+        )
+        timings = dict(self._phase_durations_seconds)
+        timings[self.phase] = timings.get(self.phase, 0.0) + max(
+            0.0, current - self._phase_started_monotonic
+        )
+        duration_ms = self.duration_ms
+        if self._finished_monotonic is None and self._started_monotonic is not None:
+            duration_ms = int(max(0.0, current - self._started_monotonic) * 1_000)
+        return {
+            "phase": self.phase,
+            "duration_ms": duration_ms,
+            "phase_timings_ms": {phase: int(seconds * 1_000) for phase, seconds in timings.items()},
+            "last_update_type": self.last_update_type,
+            "last_activity_age_ms": (
+                int(max(0.0, current - self._last_activity_monotonic) * 1_000)
+                if self._last_activity_monotonic is not None
+                else None
+            ),
+        }
 
     def status_view(self) -> Dict[str, Any]:
         errors = []
@@ -2206,7 +2293,7 @@ class Job:
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
-            "duration_ms": self.duration_ms,
+            **self.progress_view(),
             "correction_chain": (
                 {
                     "root_job_id": self.correction_root_job_id,
@@ -2455,6 +2542,7 @@ class JobManager:
             if job.cancel_event.is_set():
                 job.status = "cancelled"
                 job.finished_at = _utc_now()
+                job.freeze_progress()
                 if cwd_fd is not None:
                     os.close(cwd_fd)
                     job.cwd_fd = None
@@ -2462,6 +2550,8 @@ class JobManager:
                 return
             job.status = "running"
             job.started_at = _utc_now()
+            job._started_monotonic = started_monotonic
+            job.set_phase("probe", started_monotonic)
             job.route = ROUTE_DIRECT
             self._notify_job(job)
         terminal_status: Optional[str] = None
@@ -2471,6 +2561,18 @@ class JobManager:
                 job.process = proc
             if job.cancel_event.is_set():
                 terminate_owned_process(proc)
+
+        def set_phase(phase: str) -> None:
+            with self._lock:
+                job.set_phase(phase)
+                self._notify_job(job)
+
+        def record_activity(update_type: str) -> None:
+            with self._lock:
+                if job._finished_monotonic is None and update_type in PUBLIC_ACTIVITY_UPDATE_TYPES:
+                    job.last_update_type = update_type
+                    job._last_activity_monotonic = time.monotonic()
+                # Chunk activity does not churn revisions or wake long-pollers.
 
         try:
             if cwd_fd is None:
@@ -2509,6 +2611,7 @@ class JobManager:
             remaining_seconds = overall_deadline - time.monotonic()
             if remaining_seconds <= 0:
                 raise JobTimedOut(job.timeout_seconds)
+            set_phase("discovery")
             model_policy = resolve_runtime_model_policy(
                 probe=probe,
                 cwd=cwd,
@@ -2539,6 +2642,7 @@ class JobManager:
                 supports_no_auto_update=probe["optional_flags"]["no_auto_update"],
             )
             known_paths = [str(cwd)]
+            set_phase("prompting")
             client = ACPClient(
                 command,
                 cwd,
@@ -2547,6 +2651,8 @@ class JobManager:
                 job.max_output_chars,
                 set_process,
                 known_paths,
+                phase_callback=set_phase,
+                activity_callback=record_activity,
             )
             if overall_deadline - time.monotonic() <= 0:
                 raise JobTimedOut(job.timeout_seconds)
@@ -2743,7 +2849,9 @@ class JobManager:
                 if terminal_status is not None:
                     job.status = terminal_status
                 job.finished_at = _utc_now()
-                job.duration_ms = int((time.monotonic() - started_monotonic) * 1_000)
+                job.freeze_progress()
+                if isinstance(job.result, dict):
+                    job.result.update(job.progress_view())
                 self._notify_job(job)
 
     def get(self, job_id: str) -> Job:
@@ -2920,6 +3028,7 @@ class JobManager:
                         job.cwd_fd = None
                         job.status = "cancelled"
                         job.finished_at = _utc_now()
+                        job.freeze_progress()
                         job.revision += 1
                     if descriptor is not None:
                         try:

@@ -158,7 +158,68 @@ def acp(args: list[str]) -> int:
             elif "STDERR_OVERFLOW" in text:
                 sys.stderr.write("x" * 13_000)
                 sys.stderr.flush()
-            if "FAKE_SLEEP_SHORT" in text:
+            if "FAKE_PROGRESS" in text:
+                emit(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "update": {
+                                "sessionUpdate": "tool_call",
+                                "title": "SYNTHETIC_PROGRESS_TITLE",
+                                "arguments": {
+                                    "path": "/private/SYNTHETIC_PROGRESS_PATH",
+                                    "token": "SYNTHETIC_PROGRESS_ARGUMENT",
+                                },
+                            }
+                        },
+                    }
+                )
+                emit(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "update": {
+                                "sessionUpdate": "agent_thought_chunk",
+                                "content": {
+                                    "type": "text",
+                                    "text": "SYNTHETIC_PROGRESS_THOUGHT",
+                                },
+                            }
+                        },
+                    }
+                )
+                emit(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "update": {
+                                "sessionUpdate": "unknown_update",
+                                "title": "SYNTHETIC_PROGRESS_UNKNOWN",
+                                "arguments": "SYNTHETIC_PROGRESS_UNKNOWN_ARGUMENT",
+                            }
+                        },
+                    }
+                )
+                emit(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "update": {
+                                "sessionUpdate": "tool_call_update",
+                                "title": "SYNTHETIC_PROGRESS_UPDATE_TITLE",
+                                "arguments": {
+                                    "secret": "SYNTHETIC_PROGRESS_UPDATE_ARGUMENT",
+                                },
+                            }
+                        },
+                    }
+                )
+                time.sleep(2)
+            elif "FAKE_SLEEP_SHORT" in text:
                 time.sleep(2)
             elif "FAKE_SLEEP" in text:
                 time.sleep(30)
