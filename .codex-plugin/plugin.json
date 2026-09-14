@@ -1,6 +1,6 @@
 {
   "name": "call-grok-build",
-  "version": "0.2.0+codex.20260901061300",
+  "version": "0.2.0+codex.20260914110909",
   "description": "\u8ba9 Codex \u5728\u5f53\u524d workspace \u4e2d\u8c03\u7528\u672c\u673a Grok Build\uff0c\u5e76\u7531 Codex \u72ec\u7acb\u6838\u9a8c\u7ed3\u679c\u3002",
   "author": {
     "name": "Call Grok Build"
