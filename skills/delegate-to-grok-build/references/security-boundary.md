@@ -53,8 +53,11 @@ Codex 必须在任务前记录当前状态，任务后检查实际 diff、运行
 - 一个 job 只有一个无 session/prompt 的 discovery ACP 进程，以及一个单 session/单 prompt 的 task ACP 进程；discovery 不发送任务包或仓库内容；
 - 同一 cwd 同时只允许一个 implement job；
 - 默认 24 turns、30 分钟，硬上限 48 turns、60 分钟，输出也有界；
+- await_result 默认等待 30 秒；只有宿主已确认支持且留有超时余量时才选 60 秒；
 - 失败、超时、取消、空回答、模型切换或达到限制后不会自动重试或重新委派；
 - Luna 的 needs_changes 最多触发一次 correction 和一次回归复审；
 - cancel 只终止准确 job 创建的进程组，不使用模糊进程匹配。
 
 正常关闭会尝试清理进程组；宿主强制终止、崩溃或断电时可能留下孤儿进程，这是残余风险。
+
+status、await_result 的等待超时和终态响应，以及终态 result 会提供 `phase`、`duration_ms`、`phase_timings_ms`、`last_update_type` 和 `last_activity_age_ms`。这些字段只描述 bridge/ACP 活动，不是实际工具进度或安全隔离证明。

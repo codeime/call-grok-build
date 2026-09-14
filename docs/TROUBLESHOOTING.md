@@ -92,12 +92,14 @@ Codex 应：
 
 ## 任务似乎卡住
 
-- 优先使用 await_result 做 1 到 60 秒有界等待；
+- 优先使用 await_result 做 1 到 60 秒有界等待，默认仍为 30 秒；只有宿主已确认支持且留有超时余量时才选 60 秒；
 - 短任务通常一次等待即可，长任务只在等待超时后对同一个 job 再等；
 - status 仅用于 compact 诊断，避免高频轮询；
 - result 只在需要完整答案或审计字段时读取；
 - MCP server 重启后，内存中的 job 不保证存在，不要假称可以恢复；
 - stdout 背压或 MCP 关闭时，以终态和收据为准，不要因没有即时文本就重新发起任务。
+
+在等待超时或读取终态时，优先查看 `phase`、`duration_ms`、`phase_timings_ms`、`last_update_type` 和 `last_activity_age_ms`：前者区分排队、探测、模型发现、ACP 建立和 prompt 执行阶段；后四项只描述 bridge/ACP 活动。`last_update_type` 是安全白名单中的非 thought ACP 事件名，不是实际工具进度；这些字段不构成安全隔离或结果正确性证明。
 
 ## 取消后仍有 Grok 进程
 

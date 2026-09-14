@@ -84,7 +84,9 @@ await_result({"job_id":"<job-id>","after_revision":0,"max_wait_seconds":30})
 
 ### await_result
 
-一次等待最多 60 秒，正常结果页默认最多返回 12,000 字符。短任务直接等待终态；长任务只在本次等待超时后，对同一个 job 再等待。running 或 model revision 变化不代表要创建新 job。终态调用幂等；需要更长原文时再显式调用 result，并用 offset/limit 分页。
+一次等待最多 60 秒，默认仍为 30 秒；只有宿主已确认支持且留有 MCP tool 超时余量时，长任务才选 60 秒。正常结果页默认最多返回 12,000 字符。短任务直接等待终态；长任务只在本次等待超时后，对同一个 job 再等待。running 或 model revision 变化不代表要创建新 job。终态调用幂等；需要更长原文时再显式调用 result，并用 offset/limit 分页。
+
+`status`、`await_result` 的等待超时和终态响应，以及终态 `result` 都提供诊断字段：`phase`（`queued` / `probe` / `discovery` / `prompting` / `running`，终态保留最后执行阶段）、`duration_ms`（排队为 `null`，运行中递增，终态冻结且不含排队）、`phase_timings_ms`（含 `queued` 的阶段累计时间，当前阶段实时更新，终态冻结）、`last_update_type`（安全白名单中的非 thought ACP 事件名，不是实际工具进度）和 `last_activity_age_ms`（距最近安全 ACP 事件的毫秒数，无事件为 `null`，终态冻结）。这些字段不改变“只在终态、关闭或等待到期返回”的语义。
 
 ### setup
 

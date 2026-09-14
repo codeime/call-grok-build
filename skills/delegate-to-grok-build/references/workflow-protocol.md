@@ -33,7 +33,7 @@ correction_of_job_id 只用于 Luna 指出的那一次有界修复，必须指�
 
 ### await_result
 
-await_result(job_id, after_revision, max_wait_seconds, offset, limit) 对准确 job 做有界等待。短任务一次等到终态；长任务只在这次等待超时后继续等待同一个 job。running 或 model revision 变化不会触发新 job，终态调用幂等。offset/limit 只用于答案分页。
+await_result(job_id, after_revision, max_wait_seconds, offset, limit) 对准确 job 做有界等待。短任务一次等到终态；长任务只在这次等待超时后继续等待同一个 job。running 或 model revision 变化不会触发新 job，终态调用幂等。offset/limit 只用于答案分页。等待超时和终态响应会带 `phase`、`duration_ms`、`phase_timings_ms`、`last_update_type` 和 `last_activity_age_ms`；默认等待仍为 30 秒，只有宿主已确认支持且留有超时余量时才选 60 秒。
 
 ### setup
 
@@ -41,7 +41,7 @@ setup(cwd, timeout_seconds) 是可选诊断，用于刷新模型目录和进行�
 
 ### status、result、list、cancel
 
-- status 返回准确 job 的 compact 生命周期状态，适合低频诊断；
+- status 返回准确 job 的 compact 生命周期状态和诊断字段，适合低频诊断；
 - result 返回完整幂等 v2 收据和分页答案；
 - list 只列出当前 MCP server 进程内的 job；
 - cancel 只终止准确 job 创建的进程组，不使用模糊进程匹配。
@@ -80,6 +80,7 @@ Codex 任务前记录当前 workspace 状态，Grok 完成后检查实际 diff�
 - model、reasoning_effort、model_evidence、sandbox 和 memory_policy；
 - loop_guard、correction_chain、stop_reason、usage 和 errors；
 - answer 及其分页信息；
+- 终态 `phase`、`duration_ms`、`phase_timings_ms`、`last_update_type` 和 `last_activity_age_ms`；
 - workspace.integrity_snapshot: not_collected；
 - verification.schema_valid、review_required 和 verified。
 

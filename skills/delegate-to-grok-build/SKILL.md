@@ -51,8 +51,10 @@ Grok 自己的 Agent/subagent 始终禁用。任何 Codex 调用者都不得让 
 
 2. 只读任务调用 delegate_readonly；需要缩小 prompt 关注范围时传非空相对 paths。不要先 setup。
 3. 实现任务调用 spawn_worker。Grok 只能使用 workspace sandbox 的文件工具修改文件，不能运行 terminal、解释器、Git、测试或 Agent。
-4. 立即保存准确 job_id。对该 job 调用 await_result；短任务一次等待终态，长任务只在本次等待超时后继续等待同一 job。
+4. 立即保存准确 job_id。对该 job 调用 await_result；短任务一次等待终态，长任务只在本次等待超时后继续等待同一 job。默认等待为 30 秒；只有宿主已确认支持且留有超时余量时才选 60 秒。
 5. 读取回答前独立判断模型证据、任务结果和实际状态。收据有效不等于 Grok 的说法正确。
+
+`status`、`await_result` 的等待超时和终态响应，以及终态 `result` 会提供 `phase`、`duration_ms`、`phase_timings_ms`、`last_update_type` 和 `last_activity_age_ms`。`phase` 依次使用 `queued`、`probe`、`discovery`、`prompting`、`running`（终态保留最后执行阶段）；`duration_ms` 不含排队，`phase_timings_ms` 含排队；后两项只描述安全 ACP 活动，不是实际工具进度。内部 revision 变化仍不会结束等待或触发重派。
 
 ## 动态模型
 

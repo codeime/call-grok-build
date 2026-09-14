@@ -61,6 +61,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -q
 - await_result 的有界等待、终态幂等、准确 cancel、输出/turn/时间限制和进程组清理；
 - 同 cwd implement 互斥、不同 cwd 并行，以及 correction 仅允许一次且无自动重试；
 - 最小环境、敏感文件拒绝和公开收据的账号路径/邮箱/凭据脱敏；
+- status、await_result 超时/终态和 result 终态的 phase、duration_ms、phase_timings_ms、last_update_type、last_activity_age_ms 诊断语义；
 - grok.codex.result.v2 envelope、workspace.integrity_snapshot=not_collected 和 verification 状态。
 
 fake Grok 只能证明参数、协议和收据行为，不能证明真实 Grok CLI 完全遵守 OS sandbox。测试通过也不代表 Grok 的代码或结论正确。

@@ -106,3 +106,5 @@ implement 的安全流程由 Codex 负责：
 结果 envelope 是 grok.codex.result.v2。公开字段会使用 cwd: "."，避免把本机绝对路径写进普通响应。workspace.integrity_snapshot 为 not_collected；verification.verified 在 Codex 完成独立核验前为 false。
 
 收据中的 model_evidence、sandbox、loop_guard、usage 和 errors 用于审计本次运行，不是对 Grok 结论正确性的保证。答案、finding、测试和修复必须由 Codex 独立验证。
+
+`status`、`await_result` 的等待超时和终态响应，以及终态 `result` 会提供 `phase`、`duration_ms`、`phase_timings_ms`、`last_update_type` 和 `last_activity_age_ms`。这些字段只描述 bridge/ACP 活动，不是实际工具进度或安全隔离证明。

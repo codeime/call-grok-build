@@ -123,6 +123,8 @@ Codex 独立核验；实现还需 Luna Max
 
 每个 job 先启动一次无 session、无 prompt 的 discovery ACP 进程，用于证明 runtime model/effort；随后只启动一个 task ACP 进程，其中只有一个 session 和一条 prompt。discovery 不发送任务包或仓库内容。Codex 可以等待同一 job 的结果，但内部 revision 变化不代表需要重新调用 Grok。正常回答默认限制为 16,000 字符，await_result 默认只带 12,000 字符答案页；需要更长原文时才显式分页读取，避免把大段结果反复塞回 Codex 上下文。
 
+status、await_result 的等待超时和终态响应，以及 result 的终态收据会提供运行诊断：`phase`（`queued` / `probe` / `discovery` / `prompting` / `running`，终态保留最后执行阶段）、`duration_ms`（排队为 `null`，运行中递增，终态冻结且不含排队）、`phase_timings_ms`（含 `queued` 的阶段累计时间，当前阶段实时更新）、`last_update_type`（安全白名单中的非 thought ACP 事件名，不是实际工具进度）和 `last_activity_age_ms`（距最近安全 ACP 事件的毫秒数，无事件为 `null`，终态冻结）。这些字段只用于诊断，不改变等待或重派语义。
+
 ## 动态模型选择
 
 插件不写死 Grok 版本，也不根据版本号猜测强弱。每个 job 都刷新 grok models，并通过 ACP initialize 元数据确认 provider/runtime default model，然后从该模型实际广告的 reasoning effort 中选最高档位：
