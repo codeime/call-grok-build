@@ -37,7 +37,7 @@ description: 供 Codex 主代理或具备插件工具访问权的 subagent 调�
 
 发起 job 的调用者负责在同一 MCP server 连接内保存准确 job_id、等待、读取结果和取消。不要把 job ID 交给另一个 MCP 进程接力，也不要因为父子代理都在等待而重复发起相同 job。
 
-Grok 自己的 Agent/subagent 始终禁用。任何 Codex 调用者都不得让 Grok 递归调用本插件或其他代理。
+所有调用都必须要求 CLI 禁用 Grok 自己的 Agent/subagent。任何 Codex 调用者都不得让 Grok 递归调用本插件或其他代理。
 
 ## 必须遵循的顺序
 
@@ -50,7 +50,7 @@ Grok 自己的 Agent/subagent 始终禁用。任何 Codex 调用者都不得让 
    Evidence/output required:
 
 2. 只读任务调用 delegate_readonly；需要缩小 prompt 关注范围时传非空相对 paths。不要先 setup。
-3. 实现任务调用 spawn_worker。Grok 只能使用 workspace sandbox 的文件工具修改文件，不能运行 terminal、解释器、Git、测试或 Agent。
+3. 实现任务调用 spawn_worker。bridge 会请求 CLI 使用 workspace sandbox，并禁用 terminal、解释器、Git、测试和 Agent；fake 测试不能证明真实 CLI 的运行时限制。
 4. 立即保存准确 job_id。对该 job 调用 await_result；短任务一次等待终态，长任务只在本次等待超时后继续等待同一 job。默认等待为 30 秒；只有宿主已确认支持且留有超时余量时才选 60 秒。
 5. 读取回答前独立判断模型证据、任务结果和实际状态。收据有效不等于 Grok 的说法正确。
 
@@ -86,17 +86,18 @@ xhigh > high > medium > low > none
 
 ## 安全边界
 
-- Grok 使用 read-only 或 workspace sandbox；真实工具 ID run_terminal_cmd 和 Agent 始终禁用。
+- Grok 使用 read-only 或 workspace sandbox；bridge 会向 CLI 请求按工具 ID 移除 `run_terminal_cmd,Agent`，fake 测试不能证明真实 CLI 已执行禁用。
 - bridge 使用最小环境，不向 worker 转发 XAI_API_KEY、代理凭据和其他常见认证变量。
 - 不把 API key、密码、token、cookie、.env、SSH 私钥、证书、生产凭据、客户数据或无关个人资料放入任务。
 - 公开回答、错误和收据会递归脱敏账号路径、邮箱、URL userinfo、认证头和常见凭据形状；这不等于代码内容匿名化。
 - 当前 workspace 的根目录、home 和明显的系统配置目录不能作为 cwd；使用具体项目或资料目录。
+- 全新 ACP session 或可选的 `--no-memory` flag 不保证用户 profile、hooks、skills、plugins 或持久记忆已隔离；真实 CLI 行为需经明确授权后验证。
 
 ## 结果报告
 
 结果使用 grok.codex.result.v2。workspace.integrity_snapshot 固定为 not_collected。收据应保留：
 
-- 实际 model 和 reasoning_effort，以及 catalog/ACP 证明；
+- 实际 model 和 reasoning_effort，以及 catalog/ACP 运行一致性证据；
 - sandbox、cwd 标签、session 和 usage（可用时）；
 - loop_guard、correction 链和停止原因；
 - answer、errors 和验证状态。

@@ -27,7 +27,7 @@ spawn_readonly(task, cwd, mode) 是兼容入口，只接受 research、plan 或 
 
 ### spawn_worker
 
-spawn_worker(task, cwd) 启动 implement 任务，直接在当前 workspace 使用 workspace sandbox。它允许 primary checkout、已有 staged/unstaged/untracked 修改和非 Git 目录。Grok 只能使用文件工具，terminal、解释器、Git、测试、Agent 和外部 MCP 均禁用。
+spawn_worker(task, cwd) 启动 implement 任务，直接在当前 workspace 使用 workspace sandbox。它允许 primary checkout、已有 staged/unstaged/untracked 修改和非 Git 目录。任务只允许 Grok 使用文件工具；bridge 请求 CLI 禁用 terminal、Agent 和外部 MCP，任务禁止运行解释器、Git 或测试。fake 测试不能证明真实 CLI 已执行这些限制。
 
 correction_of_job_id 只用于 Luna 指出的那一次有界修复，必须指向同一 cwd、紧邻且成功的 implement job。最多一次 correction；失败 job 不能作为 parent。
 
@@ -50,7 +50,7 @@ setup(cwd, timeout_seconds) 是可选诊断，用于刷新模型目录和进行�
 
 ## 模型与 sandbox
 
-bridge 不写死 Grok 版本，也不根据版本字符串猜测强弱。实际 model 由 catalog 和 ACP runtime default 共同证明，reasoning effort 取该模型实际广告的最高档位：
+bridge 不写死 Grok 版本，也不根据版本字符串猜测强弱。实际 model 由 catalog 和 ACP runtime default 做运行时一致性证明，reasoning effort 取该模型实际广告的最高档位：
 
 ~~~text
 xhigh > high > medium > low > none
@@ -58,13 +58,13 @@ xhigh > high > medium > low > none
 
 catalog、ACP、完成信息或 model-switch 不一致，或出现 fallback、未知 effort、空结果时，任务失败关闭或保持 unverified。
 
-research、plan、review 使用 read-only sandbox；implement 使用 workspace sandbox。所有任务显式禁用真实工具 ID run_terminal_cmd 和 Agent，防止 Grok 递归调用本插件或其他代理。
+research、plan、review 使用 read-only sandbox；implement 使用 workspace sandbox。所有任务都由 bridge 向 CLI 请求按工具 ID 移除 `run_terminal_cmd,Agent`，防止 Grok 递归调用本插件或其他代理；fake 测试不能证明真实 CLI 已执行禁用。
 
 ## Codex subagent
 
 如果宿主向 Codex subagent 暴露本插件工具，subagent 可以直接成为一次 job 的生命周期负责人；否则它应把任务包交回主代理。父任务不要让多个调用者为同一目标重复发起。
 
-Codex subagent 和 Grok subagent 是两件事：前者可作为插件调用者，后者始终禁用。插件不检查主代理身份，但每个调用者只操作自己准确持有的 job_id。
+Codex subagent 和 Grok subagent 是两件事：前者可作为插件调用者，后者必须由每次调用请求 CLI 禁用。插件不检查主代理身份，但每个调用者只操作自己准确持有的 job_id。
 
 ## 实现后的核验
 
@@ -85,6 +85,8 @@ Codex 任务前记录当前 workspace 状态，Grok 完成后检查实际 diff�
 - verification.schema_valid、review_required 和 verified。
 
 schema_valid 只表示 envelope 格式正确。verified 只有 Codex 完成独立核验后才可判定。
+
+全新 ACP session 或可选的 `--no-memory` flag 不保证用户 profile、hooks、skills、plugins 或持久记忆已隔离；profile、记忆、slash command、deny/tool ID 的真实 CLI 行为，以及 `--json-schema` 与 ACP stdio 的兼容性，需明确授权后受控验证。
 
 ## 停止条件
 

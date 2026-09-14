@@ -27,8 +27,8 @@
 - research、plan、review 使用 read-only sandbox；implement 使用 workspace sandbox，允许主工作目录、已有修改和非 Git 目录。
 - 任务前后的工作区状态由 Codex 记录和检查；bridge 不声称能区分任务前已有修改与 Grok 新增修改。
 - 结果必须是 grok.codex.result.v2，workspace.integrity_snapshot 为 not_collected。
-- 模型每次从实时 catalog 和 ACP runtime default 证明，使用当前模型实际广告的最高 reasoning effort；禁止写死版本、静默 fallback 或接受 model switch。
-- 真实工具 ID run_terminal_cmd 和 Agent 必须禁用；不得递归调用插件。
+- 模型每次从实时 catalog 和 ACP runtime default 做运行时一致性证明，使用当前模型实际广告的最高 reasoning effort；禁止写死版本、静默 fallback 或接受 model switch。
+- bridge 必须向 CLI 请求按工具 ID 移除 run_terminal_cmd 和 Agent；不得递归调用插件。fake 测试不能证明真实 CLI 的运行时禁用。
 - 单 prompt、turn/time/output ceiling、准确 cancel、同 cwd implement 互斥和 correction 上限不可移除。
 
 ## Agent 协作资产
@@ -54,7 +54,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -q
 - research、plan、review 保持 read-only，implement 使用 workspace sandbox；
 - primary checkout、已有修改和非 Git 目录都能按契约处理；
 - paths 只影响 prompt 关注范围，不改变 cwd 或访问方式；
-- Grok 不能使用 terminal、Agent、外部 MCP 或递归调用插件；
+- bridge 必须请求 CLI 禁用 terminal、Agent、外部 MCP 和递归调用插件；fake 测试不能证明真实 CLI 的运行时限制；
 - 任务前后由 Codex 记录的状态、实际 diff、测试和独立 review 能正确决定验证状态；
 - 当前 cwd 的稳定目录句柄、权限和路径替换检测失败关闭；
 - 动态 catalog、ACP runtime default、最高 effort、fallback 和 model switch 证明一致；
@@ -64,7 +64,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -q
 - status、await_result 超时/终态和 result 终态的 phase、duration_ms、phase_timings_ms、last_update_type、last_activity_age_ms 诊断语义；
 - grok.codex.result.v2 envelope、workspace.integrity_snapshot=not_collected 和 verification 状态。
 
-fake Grok 只能证明参数、协议和收据行为，不能证明真实 Grok CLI 完全遵守 OS sandbox。测试通过也不代表 Grok 的代码或结论正确。
+fake Grok 只能证明参数、协议和收据行为，不能证明真实 Grok CLI 完全遵守 OS sandbox、profile/记忆隔离、slash command 限制或 deny/tool ID 禁用。测试通过也不代表 Grok 的代码或结论正确。
 
 ### 真实 smoke test
 
@@ -74,7 +74,7 @@ fake Grok 只能证明参数、协议和收据行为，不能证明真实 Grok C
 python3 tests/real_smoke.py --cwd /path/to/project --timeout 300
 ~~~
 
-只有用户明确授权联网和消耗请求时才运行。它只提供当前安装版本的运行证据，不能替代 Codex 的测试、diff 检查或 Luna Max review。
+只有用户明确授权联网和消耗请求时才运行。profile、记忆、slash command、deny/tool ID 等安全行为也只有在明确授权的受控真实 CLI 验证中才能确认；本轮不执行。smoke test 只提供当前安装版本的运行证据，不能替代 Codex 的测试、diff 检查或 Luna Max review。
 
 ## MCP stdio 调试
 

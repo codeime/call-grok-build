@@ -22,15 +22,15 @@ Grok 任务的 prompt、被选择的代码上下文、文件名、工具输出�
 
 - research、plan、review 使用 read-only sandbox；
 - implement 使用 workspace sandbox，直接作用于当前 workspace；
-- 真实工具 ID run_terminal_cmd 和 Agent 始终禁用；
-- Grok 不能运行 shell、解释器、Git、测试，不能调用本插件或再创建代理；
+- bridge 会向 CLI 请求按工具 ID 移除 `run_terminal_cmd,Agent`；fake 测试不能证明真实 CLI 已执行禁用；
+- 任务禁止 Grok 运行 shell、解释器、Git、测试，递归调用本插件或再创建代理；
 - 测试、实际 diff 检查和最终审查由 Codex 在 Grok 返回后完成。
 
 ## 环境与凭据
 
 bridge 使用最小 worker 环境。认证由 Grok CLI 自己管理，不把 XAI_API_KEY、代理凭据、USER、LOGNAME 或其他无关身份变量转发给 worker。公开结果、错误和诊断会递归脱敏账号路径、邮箱、URL userinfo、认证头和常见凭据形状。
 
-每个任务使用全新的 ACP session。若 CLI 支持 no-memory 选项，bridge 会关闭会话记忆；否则只报告 fresh session without memory opt-in，不作超出收据的记忆隔离承诺。
+每个任务使用全新的 ACP session。若 CLI 支持 no-memory 选项，bridge 只会传递该 flag，不能据此保证用户 profile、hooks、skills、plugins 或持久记忆已隔离；否则只报告 `fresh_session_without_memory_opt_in`，不作超出收据的记忆隔离承诺。profile、记忆、slash command、deny/tool ID 的真实 CLI 行为需用户明确授权后再做受控验证。
 
 ## 模型
 
@@ -40,7 +40,7 @@ bridge 使用最小 worker 环境。认证由 Grok CLI 自己管理，不把 XAI
 xhigh > high > medium > low > none
 ~~~
 
-不得写死版本、根据名字猜测强弱、静默接受 fallback 或忽略 model-switch。catalog、ACP、完成信息或 model-switch 不一致时，结果保持未验证并失败关闭。
+不得写死版本、根据名字猜测强弱、静默接受 fallback 或忽略 model-switch。catalog、ACP、可用完成信息或 model-switch 不一致时，结果保持未验证并失败关闭；这些是同一 CLI 的运行时一致性证据，不保证 provider 或答案正确性。
 
 ## 写入与归因
 

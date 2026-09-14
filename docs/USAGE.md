@@ -65,6 +65,8 @@ spawn_readonly 是兼容入口，适合需要显式传入参数的调用。新�
 
 implement 使用 workspace sandbox，可以作用于 primary checkout、已有 staged/unstaged/untracked 修改和非 Git 目录。bridge 不创建额外目录，也不声称能自动区分任务前已有修改与 Grok 新增修改。Codex 应在任务前记录状态，任务后检查实际 diff 并运行测试。
 
+全新 ACP session 或可选的 `--no-memory` flag 不保证用户 Grok profile、hooks、skills、plugins 或持久记忆已隔离；这类真实 CLI 行为不由 fake 测试证明。
+
 如果 Luna 返回 needs_changes，Codex 最多发起一次带明确 parent 的 correction，并完成一次 Grok 回归复审和一次 Luna Max 终审。失败、取消、超时或模型切换不会自动重试或重新委派。
 
 ## MCP 工具契约
@@ -110,7 +112,7 @@ spawn_worker 启动 implement 任务，使用当前 workspace 的 workspace sand
 | 字段 | 含义 |
 | --- | --- |
 | model、reasoning_effort | 本次实际选择并锁定的模型和最高可用 effort |
-| model_evidence | catalog、ACP runtime 和完成信息的证明 |
+| model_evidence | catalog、ACP initialize 和可用完成信息的运行一致性证据，不保证答案或独立 provider 正确性 |
 | route | 固定为 direct |
 | cwd | 公开结果中的脱敏标签，通常为 . |
 | sandbox | read-only 或 workspace |
@@ -124,7 +126,7 @@ schema_valid 为 true 只表示格式正确。verified 在 Codex 完成独立核
 
 如果宿主向 Codex subagent 暴露本插件工具，subagent 可以直接成为一次 job 的生命周期负责人；否则它应把任务包交回主代理，不要声称已经调用。
 
-一个父任务只能指定一个调用者负责同一目标。job_id、等待和结果读取不在不同 MCP 进程间接力。Grok 的 Agent/subagent 始终禁用，Codex subagent 也不得递归调用本插件。
+一个父任务只能指定一个调用者负责同一目标。job_id、等待和结果读取不在不同 MCP 进程间接力。所有调用都必须要求 CLI 禁用 Grok 的 Agent/subagent，Codex subagent 也不得递归调用本插件。
 
 ## 停止条件
 

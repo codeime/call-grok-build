@@ -38,10 +38,10 @@ Grok CLI 在本机运行，但 prompt、被选择的代码上下文、工具输�
 
 ## Grok 工具能力
 
-research、plan 和 review 使用 Grok CLI 的 read-only sandbox；implement 使用 workspace sandbox。所有模式都禁用真实工具 ID run_terminal_cmd 和 Agent：
+research、plan 和 review 使用 Grok CLI 的 read-only sandbox；implement 使用 workspace sandbox。所有模式都由 bridge 向 CLI 请求按工具 ID 移除 `run_terminal_cmd,Agent`；fake 测试不能证明真实 CLI 已执行禁用：
 
-- Grok 不能通过本插件递归调用另一个 Grok job；
-- Grok 不能创建 Codex 任务或其他 Agent；
+- 任务禁止 Grok 通过本插件递归调用另一个 Grok job；
+- 任务禁止 Grok 创建 Codex 任务或其他 Agent；
 - implement 的测试、Git 查询和最终 diff 检查由 Codex 在 Grok 返回后执行；
 - 任务 prompt 只描述目标、范围、约束和验收标准，不转发整段对话。
 
@@ -63,9 +63,11 @@ bridge 会按文件名和内容形状拒绝或脱敏常见凭据，但主动缩�
 
 - 使用已登录的 Grok CLI 缓存认证；bridge 不把 XAI_API_KEY、代理凭据或其他认证变量转发给 worker。
 - worker 只接收完成任务所需的最小环境变量，包括必要的 HOME、PATH、TMPDIR、locale/terminal 和 TLS 证书设置。
-- 每个任务使用全新的 ACP session；如果 CLI 支持 no-memory 选项，bridge 会关闭会话记忆，否则收据只记录 fresh session without memory opt-in。
+- 每个任务使用全新的 ACP session；如果 CLI 支持 no-memory 选项，bridge 只会传递该 flag，不能据此保证用户 profile、hooks、skills、plugins 或持久记忆已隔离；否则收据只记录 `fresh_session_without_memory_opt_in`，不作记忆隔离承诺。
 - 公开 result、status、错误和诊断会递归处理账号路径、邮箱、URL userinfo、认证头和常见凭据形状。
 - 脱敏只保护收据和输出中的已知形状；代码内容、文件名、模型上下文和本机进程参数仍可能暴露项目身份。
+
+profile、记忆、slash command、deny/tool ID 的真实 CLI 行为，以及 `--json-schema` 与 ACP stdio 的兼容性，需用户明确授权后再做受控验证；本轮不执行真实任务或联网探测。
 
 ## 模型证明
 
@@ -75,7 +77,7 @@ bridge 会按文件名和内容形状拒绝或脱敏常见凭据，但主动缩�
 xhigh > high > medium > low > none
 ~~~
 
-catalog、ACP runtime、完成信息或 model-switch 事件不一致时，任务失败关闭或保持 unverified；不得静默 fallback。实际 model 和 reasoning_effort 以 v2 收据为准。
+catalog、ACP runtime、可用的完成信息或 model-switch 事件不一致时，任务失败关闭或保持 unverified；不得静默 fallback。这是同一 CLI 的运行时一致性证据，不是独立或加密的 provider 证明。实际 model 和 reasoning_effort 以 v2 收据为准。
 
 ## 变更与核验
 
@@ -93,7 +95,7 @@ implement 的安全流程由 Codex 负责：
 
 ## 循环、并发与取消
 
-- 一个 job 先使用一个无 session/prompt 的 discovery ACP 进程证明模型，再使用一个只有单 session/单 prompt 的 task ACP 进程；discovery 不接收任务包或仓库内容。
+- 一个 job 先使用一个无 session/prompt 的 discovery ACP 进程做模型一致性证明，再使用一个只有单 session/单 prompt 的 task ACP 进程；discovery 不接收任务包或仓库内容。
 - 同一个 cwd 同时只允许一个活动 implement job；read-only job 可以并行。
 - 默认 24 turns、30 分钟，硬上限 48 turns、60 分钟，答案和 stderr 也有界。
 - 失败、超时、取消、模型切换、空结果和达到限制后不会自动重试或重新委派。

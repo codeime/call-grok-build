@@ -8,7 +8,7 @@ Call Grok Build 是一个 Codex 插件。它让 Codex 主代理或具备插件�
 
 - Codex 宿主把当前 workspace 的绝对路径传给插件；Grok 使用同一个目录作为进程 cwd。
 - 所有路由都是 direct。可选的 paths 只用于告诉 Grok 关注哪些相对路径，不是访问控制，也不会把代码复制到另一目录。
-- read-only 任务使用 read-only sandbox；implement 使用 workspace sandbox。Grok 的 terminal 和 Agent 工具始终禁用。
+- read-only 任务使用 read-only sandbox；implement 使用 workspace sandbox。bridge 会向 CLI 请求按工具 ID 移除 `run_terminal_cmd,Agent`；fake 测试不能证明真实 CLI 已执行禁用。
 - bridge 不扫描 Git 或整个目录内容；结果中的 workspace.integrity_snapshot 固定为 not_collected。
 - implement 可以在当前目录直接工作，包括 primary checkout、已有修改和非 Git 目录。Codex 会在任务前记录工作区现状，任务后运行测试，并交给 gpt-5.6-luna 的 max reasoning 做独立 review；bridge 不声称能自动区分哪些修改来自 Grok。
 - 用户明确点名 Grok Build 后，该请求覆盖同一当前 workspace 中完成这次有界流程所需的代码和上下文，不会仅因仓库是私有仓库或内容会发送到 xAI 再次询问。
@@ -59,7 +59,7 @@ Codex 随后复现 high/critical 结论。
 父任务不要为同一目标重复提交。
 ~~~
 
-主代理和 subagent 使用同一套工具契约。发起调用的代理负责同一 MCP 连接中的 job_id、等待、结果读取和取消；连接结束后不要让其他进程接力旧 job。Grok 自己的 Agent/subagent 始终禁用，任何层都不能递归调用本插件。
+主代理和 subagent 使用同一套工具契约。发起调用的代理负责同一 MCP 连接中的 job_id、等待、结果读取和取消；连接结束后不要让其他进程接力旧 job。所有调用都必须要求 CLI 禁用 Grok 自己的 Agent/subagent，任何调用者都不得递归调用本插件。
 
 ## 四类任务
 
@@ -121,7 +121,7 @@ Grok Build CLI / ACP stdio
 Codex 独立核验；实现还需 Luna Max
 ~~~
 
-每个 job 先启动一次无 session、无 prompt 的 discovery ACP 进程，用于证明 runtime model/effort；随后只启动一个 task ACP 进程，其中只有一个 session 和一条 prompt。discovery 不发送任务包或仓库内容。Codex 可以等待同一 job 的结果，但内部 revision 变化不代表需要重新调用 Grok。正常回答默认限制为 16,000 字符，await_result 默认只带 12,000 字符答案页；需要更长原文时才显式分页读取，避免把大段结果反复塞回 Codex 上下文。
+每个 job 先启动一次无 session、无 prompt 的 discovery ACP 进程，用于做 runtime model/effort 一致性证明；随后只启动一个 task ACP 进程，其中只有一个 session 和一条 prompt。discovery 不发送任务包或仓库内容。Codex 可以等待同一 job 的结果，但内部 revision 变化不代表需要重新调用 Grok。正常回答默认限制为 16,000 字符，await_result 默认只带 12,000 字符答案页；需要更长原文时才显式分页读取，避免把大段结果反复塞回 Codex 上下文。
 
 status、await_result 的等待超时和终态响应，以及 result 的终态收据会提供运行诊断：`phase`（`queued` / `probe` / `discovery` / `prompting` / `running`，终态保留最后执行阶段）、`duration_ms`（排队为 `null`，运行中递增，终态冻结且不含排队）、`phase_timings_ms`（含 `queued` 的阶段累计时间，当前阶段实时更新）、`last_update_type`（安全白名单中的非 thought ACP 事件名，不是实际工具进度）和 `last_activity_age_ms`（距最近安全 ACP 事件的毫秒数，无事件为 `null`，终态冻结）。这些字段只用于诊断，不改变等待或重派语义。
 
@@ -157,7 +157,7 @@ Grok 的答案、finding 和修改都只是候选结果。收据格式正确不�
 
 ## 数据边界
 
-Grok CLI 在本机运行，但 prompt、被选择的代码上下文和模型服务请求会发送到 xAI。不要把密钥、cookie、token、.env、SSH 私钥、证书、生产凭据、客户数据或无关个人资料放进任务范围。bridge 使用最小环境变量，拒绝向 worker 转发常见认证变量，并在公开收据、错误和输出中做凭据与账号路径脱敏。
+Grok CLI 在本机运行，但 prompt、被选择的代码上下文和模型服务请求会发送到 xAI。不要把密钥、cookie、token、.env、SSH 私钥、证书、生产凭据、客户数据或无关个人资料放进任务范围。bridge 使用最小环境变量，拒绝向 worker 转发常见认证变量，并在公开收据、错误和输出中做凭据与账号路径脱敏。全新 ACP session 或可选的 no-memory flag 不保证用户 profile、hooks、skills、plugins 或持久记忆已隔离；真实 CLI 行为需经明确授权后验证。
 
 文件名和内容仍可能暴露项目身份；脱敏不是内容匿名化。任务应使用当前 workspace 中与目标直接相关的范围。paths 只能提示 Grok 关注范围，不能替代敏感文件判断。
 
