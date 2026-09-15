@@ -20,9 +20,9 @@ description: 修改或审查 Call Grok Build 的 MCP server、bridge、任务生
 - implement 允许 primary checkout、已有 dirty 状态和非 Git 目录。bridge 不声称能区分任务前已有修改与 Grok 新增修改，Codex 负责任务前记录、任务后 diff/测试和独立 review。
 - 结果 envelope 必须是 grok.codex.result.v2，workspace.integrity_snapshot 必须为 not_collected。
 - 动态模型来自实时 catalog 与 ACP runtime default 的共同证明，并选择当前模型实际广告的最高 effort；禁止写死版本、fallback 或静默 model switch。
-- research、plan、review 必须使用 read-only sandbox；implement 必须使用 workspace sandbox。真实工具 ID run_terminal_cmd 和 Agent 始终禁用。
-- 一个 job 只有一个无 session/prompt 的 discovery ACP 进程，以及一个单 session/单 prompt 的 task ACP 进程；不得增加自动重试、自动重新委派或递归代理。
-- 保留 turn/time/output ceiling、准确 cancel、同 cwd implement 互斥和最多一次 correction/回归复审。
+- research、plan、review 必须使用 read-only sandbox；implement 必须使用 workspace sandbox。真实工具 ID `run_terminal_cmd`、外部 MCP 和顶层递归调用本插件禁用；三个任务入口的 `allow_subagents` 默认是 `false`，显式为 `true` 时才允许同一 job/cwd 内的 Grok 内置 Agent。
+- bridge 最多同时执行 4 个独立顶层 job；同一 cwd 的 implement 仍互斥，read-only job 可以并行。每个 job 只有一个无 session/prompt 的 discovery ACP 进程和一个 parent task ACP 进程；内置 Agent 仍在该 parent job/cwd 内运行，bridge 不设或观测其数量。不得增加自动重试、自动重新委派或新的顶层递归 job。
+- 保留 parent sandbox、范围、显式 timeout、turn/output ceiling、准确 cancel 和最多一次 correction/回归复审；`timeout_seconds` 可省略或为 null 表示 job 不设截止，显式整数至少为 10 且无 bridge 额外最大值。`await_result` 的 1–60 秒只是单次等待窗口，不会终止 job；fake 不能证明子 agent 的约束继承、清理或事件来源。
 
 ## MCP server
 
@@ -41,11 +41,12 @@ description: 修改或审查 Call Grok Build 的 MCP server、bridge、任务生
 
 - job 使用稳定 cwd 句柄，排队后路径替换不会把 Grok 导向另一个目录；
 - 每个 job 都实时证明 provider/runtime default model 和最高 advertised effort；
-- 单 job 只有一次 live catalog preflight、一个无 session/prompt 的 discovery ACP 进程，以及一个单 session/单 prompt 的 task ACP 进程；
-- read-only/workspace sandbox、run_terminal_cmd/Agent 禁用、最小环境和敏感文件拒绝持续生效；
-- 内容、答案和 stderr 有界，deadline、turn limit、cancel 和进程组清理不会被标记为成功；
+- 单 job 只有一次 live catalog preflight、一个无 session/prompt 的 discovery ACP 进程，以及一个单 session/单 prompt 的 parent task ACP 进程；`allow_subagents=true` 时，Grok 内置 Agent 只能在这个 parent job/cwd 内分解任务；
+- read-only/workspace sandbox、`run_terminal_cmd`/外部 MCP/顶层递归调用禁用、最小环境和敏感文件拒绝持续生效；
+- bridge 不设置或观测内部子 agent 数量；审查时要确认三入口的 `allow_subagents` 默认关闭、显式开启语义与 parent sandbox/范围/显式 timeout/turn/output 约束一致；
+- 内容、答案和 stderr 有界；调用方显式设置的 timeout、turn limit、cancel 和进程组清理不会被标记为成功；
 - 同一 cwd 的 implement 互斥只按稳定 filesystem identity 判断；
-- correction 只能引用紧邻成功 parent，最多一次，不得分支、递归或自动重试；
+- correction 只能引用紧邻成功 parent，最多一次，不得分支、创建新的顶层递归 job 或自动重试；
 - MCP server 重启后不假称能恢复旧 job。
 
 ## 调用方 Skill 与文档
@@ -58,7 +59,7 @@ description: 修改或审查 Call Grok Build 的 MCP server、bridge、任务生
 - docs/TROUBLESHOOTING.md
 - docs/DEVELOPMENT.md
 
-文档必须说明：当前 workspace 原目录直连；paths 只是 prompt focus；明确点名 Grok Build 的用户请求不需要重复授权询问；Codex subagent 可以作为调用者；Grok Agent/subagent 永远禁用；implement 允许 primary、dirty、非 Git；Codex 负责任务前后状态、测试和 Luna Max review。
+文档必须说明：当前 workspace 原目录直连；paths 只是 prompt focus；明确点名 Grok Build 的用户请求不需要重复授权询问；Codex subagent 可以作为调用者；三个任务入口的 `allow_subagents` 默认关闭，显式开启才允许同一 job/cwd 内的 Grok 内置 Agent；terminal、外部 MCP 和顶层递归调用仍禁用；implement 允许 primary、dirty、非 Git；Codex 负责任务前后状态、测试和 Luna Max review。
 
 ## 验证
 
@@ -69,7 +70,7 @@ python3 -m py_compile mcp/grok_build_server.py scripts/grok_build_bridge.py test
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -q
 ~~~
 
-测试使用 tests/fake_grok.py，不能证明真实 Grok sandbox。只有用户明确授权联网和消耗请求时才运行 tests/real_smoke.py。
+测试使用 tests/fake_grok.py，不能证明真实 Grok sandbox，也不能证明子 agent 的 sandbox/范围/限制继承、进程清理或事件来源。只有用户明确授权联网和消耗请求时才运行 tests/real_smoke.py。
 
 涉及 Grok 生成代码或安全关键实现时，Codex 必须独立复现关键结论；实现还需只读 gpt-5.6-luna、max reasoning reviewer 检查原始需求、实际 diff 和测试证据。
 

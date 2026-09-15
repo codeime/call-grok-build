@@ -28,8 +28,8 @@
 - 任务前后的工作区状态由 Codex 记录和检查；bridge 不声称能区分任务前已有修改与 Grok 新增修改。
 - 结果必须是 grok.codex.result.v2，workspace.integrity_snapshot 为 not_collected。
 - 模型每次从实时 catalog 和 ACP runtime default 做运行时一致性证明，使用当前模型实际广告的最高 reasoning effort；禁止写死版本、静默 fallback 或接受 model switch。
-- bridge 必须向 CLI 请求按工具 ID 移除 run_terminal_cmd 和 Agent；不得递归调用插件。fake 测试不能证明真实 CLI 的运行时禁用。
-- 单 prompt、turn/time/output ceiling、准确 cancel、同 cwd implement 互斥和 correction 上限不可移除。
+- bridge 必须禁用 `run_terminal_cmd`、外部 MCP 和顶层递归调用本插件；三个任务入口的 `allow_subagents` 默认关闭，显式开启才允许同一 job/cwd 内的 Grok 内置 Agent。fake 测试不能证明真实 CLI 的子 agent 约束继承、清理或事件来源。
+- 顶层同时最多 4 个独立 job；同 cwd implement 互斥仍保留，read-only job 可以并行。parent sandbox、范围、显式 timeout、turn/output ceiling、准确 cancel 和 correction 上限不可移除；`timeout_seconds` 可省略或为 null，表示 job 不设截止。
 
 ## Agent 协作资产
 
@@ -54,17 +54,18 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -q
 - research、plan、review 保持 read-only，implement 使用 workspace sandbox；
 - primary checkout、已有修改和非 Git 目录都能按契约处理；
 - paths 只影响 prompt 关注范围，不改变 cwd 或访问方式；
-- bridge 必须请求 CLI 禁用 terminal、Agent、外部 MCP 和递归调用插件；fake 测试不能证明真实 CLI 的运行时限制；
+- bridge 必须请求 CLI 禁用 terminal、外部 MCP 和顶层递归调用插件；三入口的 `allow_subagents` 默认必须为 false，true 时才允许同一 job/cwd 内的内置 Agent；fake 测试不能证明真实 CLI 的子 agent 约束继承、清理或事件来源；
 - 任务前后由 Codex 记录的状态、实际 diff、测试和独立 review 能正确决定验证状态；
 - 当前 cwd 的稳定目录句柄、权限和路径替换检测失败关闭；
 - 动态 catalog、ACP runtime default、最高 effort、fallback 和 model switch 证明一致；
 - await_result 的有界等待、终态幂等、准确 cancel、输出/turn/时间限制和进程组清理；
-- 同 cwd implement 互斥、不同 cwd 并行，以及 correction 仅允许一次且无自动重试；
+- 顶层最多 4 个独立 job、同 cwd implement 互斥、不同 cwd 并行，以及 correction 仅允许一次且无自动重试；
+- delegate_readonly、spawn_readonly 和 spawn_worker 的 `allow_subagents` 默认关闭，显式开启时共享 parent job/cwd 的 workspace，且 bridge 不限制或观测子 agent 数量；
 - 最小环境、敏感文件拒绝和公开收据的账号路径/邮箱/凭据脱敏；
 - status、await_result 超时/终态和 result 终态的 phase、duration_ms、phase_timings_ms、last_update_type、last_activity_age_ms 诊断语义；
 - grok.codex.result.v2 envelope、workspace.integrity_snapshot=not_collected 和 verification 状态。
 
-fake Grok 只能证明参数、协议和收据行为，不能证明真实 Grok CLI 完全遵守 OS sandbox、profile/记忆隔离、slash command 限制或 deny/tool ID 禁用。测试通过也不代表 Grok 的代码或结论正确。
+fake Grok 只能证明参数、协议和收据行为，不能证明真实 Grok CLI 完全遵守 OS sandbox、profile/记忆隔离、slash command 限制或 deny/tool ID 禁用，也不能证明内置子 agent 继承 parent 约束、进程清理或事件来源。测试通过也不代表 Grok 的代码或结论正确。
 
 ### 真实 smoke test
 

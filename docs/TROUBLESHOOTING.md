@@ -34,6 +34,10 @@ grok models
 
 发起 job 的代理必须在同一 MCP server 连接中保存 job_id、等待终态和读取收据。server 连接结束后，其他进程不能接力旧 job。每个调用者只管理自己发起的 job；一个父任务不要为同一目标重复提交。
 
+### allow_subagents 与并发
+
+`delegate_readonly`、`spawn_readonly` 和 `spawn_worker` 的 `allow_subagents` 默认是 `false`。只有任务适合并行且写入边界清楚时才显式设为 `true`；多个 Grok 内置 Agent 会共享同一 job/cwd 的 workspace。顶层最多同时运行 4 个独立 job，同一 cwd 的 implement 仍互斥；terminal、外部 MCP 和顶层递归调用本插件仍禁用。bridge 不限制或观测子 agent 数量，fake 测试也不能证明 child runtime 的约束继承、清理或事件来源。
+
 ### 不再重复询问授权
 
 当前 task 已明确点名 Grok Build 且目标是当前 workspace 时，不要仅因仓库私有、代码会发送到 xAI、任务是 implement 或由 subagent 发起而再次询问。该授权覆盖本次初始 job，以及同 cwd 内最多一次 correction、一次 Grok 回归复审和一次 Luna Max 终审，但不覆盖密钥、客户数据、任务外目录、额外外部操作或自动重新委派。
@@ -66,7 +70,8 @@ xhigh > high > medium > low > none
 | E_MODEL_ATTESTATION、E_MODEL_MISMATCH、E_EFFORT_MISMATCH、E_MODEL_FALLBACK、E_MODEL_SWITCHED | 运行时模型证明不一致或发生 fallback/switch | 停止使用结果，保留收据并检查 CLI/服务配置 |
 | E_GROK_START、E_ACP_EXIT、E_ACP_PROTOCOL、E_ACP_SESSION | ACP 进程或协议启动异常 | 保留有界 stderr，检查 CLI 版本和登录状态；不要把部分回答当作成功 |
 | E_EMPTY_RESULT、E_OUTPUT_LIMIT、E_STDERR_LIMIT、E_TURN_LIMIT | 没有答案或达到回答/turn 限制 | 缩小任务和输出要求；该 job 不会自动继续 |
-| E_TIMEOUT、timed_out | job 达到执行 deadline | 记录状态；implement 要检查实际 diff；不要自动重试 |
+| E_TIMEOUT、timed_out | job 的显式 `timeout_seconds` 到期 | 记录状态；implement 要检查实际 diff；`await_result` 等待窗口到期不会终止 job；不要自动重试 |
+| E_PROBE_TIMEOUT | setup 或任务前能力探测达到各自本地窗口；默认无任务截止也可能出现此错误 | 检查 CLI 和模型目录刷新；它不表示正式任务已运行到截止，不要自动重试 |
 | E_CANCELLED、cancelled | 准确 job 已被取消 | 读取收据并检查当前目录；取消不会撤销已发生的文件修改 |
 | failed、unverified | bridge 或 Codex 无法证明结果，或独立核验未完成 | 停止使用该结果，按证据修复后由 Codex 决定是否发起唯一 correction |
 
@@ -92,14 +97,15 @@ Codex 应：
 
 ## 任务似乎卡住
 
-- 优先使用 await_result 做 1 到 60 秒有界等待，默认仍为 30 秒；只有宿主已确认支持且留有超时余量时才选 60 秒；
+- 默认没有 job 执行截止；若四个永不结束的 job 占满槽位，第五个会保持 queued。用 `status` 核对准确 job_id，需要停止时使用 `cancel`；排队且尚未启动的 job 会立即变为 cancelled 并释放目录句柄。不要对排队的同一目标重新发起 job。
+- 优先使用 await_result 做 1 到 60 秒单次有界等待，默认仍为 30 秒；等待到期不会终止 job，只有宿主已确认支持且留有 MCP tool 超时余量时才选 60 秒；`timeout_seconds` 可省略或为 null 表示 job 不设截止，显式整数至少为 10 且没有 bridge 额外最大值；
 - 短任务通常一次等待即可，长任务只在等待超时后对同一个 job 再等；
 - status 仅用于 compact 诊断，避免高频轮询；
 - result 只在需要完整答案或审计字段时读取；
 - MCP server 重启后，内存中的 job 不保证存在，不要假称可以恢复；
 - stdout 背压或 MCP 关闭时，以终态和收据为准，不要因没有即时文本就重新发起任务。
 
-在等待超时或读取终态时，优先查看 `phase`、`duration_ms`、`phase_timings_ms`、`last_update_type` 和 `last_activity_age_ms`：前者区分排队、探测、模型发现、ACP 建立和 prompt 执行阶段；后四项只描述 bridge/ACP 活动。`last_update_type` 是安全白名单中的非 thought ACP 事件名，不是实际工具进度；这些字段不构成安全隔离或结果正确性证明。
+在等待超时或读取终态时，优先查看 `phase`、`duration_ms`、`phase_timings_ms`、`last_update_type` 和 `last_activity_age_ms`：前者区分排队、探测、模型发现、ACP 建立和 prompt 执行阶段；后四项只描述 parent bridge/ACP 活动。`last_update_type` 是安全白名单中的非 thought ACP 事件名，不是实际工具进度；启用子 agent 时，这些字段不证明 child runtime 的约束继承、清理或事件来源，也不构成安全隔离或结果正确性证明。
 
 ## 取消后仍有 Grok 进程
 

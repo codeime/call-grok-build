@@ -31,7 +31,7 @@
 - 该授权覆盖初次 job；如果 Luna 发现问题，也覆盖同一 cwd 内最多一次 correction、一次 Grok 回归复审和一次 Luna Max 终审。它不覆盖密钥、客户/第三方数据、任务外目录、额外外部操作、自动重试或重新委派。
 - 安装、更新缓存、提交、推送、发布和真实 Grok smoke test 仍需要明确授权。普通委托不会替用户执行这些动作。
 - 一个 Grok job 只有一个生命周期负责人。不要自动重试、自动重新委派、高频轮询或递归调用本插件。
-- Codex subagent 只有在宿主确实暴露本插件工具时才能直接调用；Grok 的 Agent/subagent 始终禁用。
+- Codex subagent 只有在宿主确实暴露本插件工具时才能直接调用。三个任务入口的 `allow_subagents` 默认是 `false`；显式设为 `true` 时，Grok 才可以在同一 job/cwd 内使用内置 Agent 分解任务。parent job 的 sandbox、范围、显式 deadline、turn 和 output 约束仍是 bridge 契约；bridge 不宣称这些约束已被 child runtime 继承，也不设置或观测内部子 agent 数量。terminal、外部 MCP 和顶层递归调用本插件仍禁用。
 
 ## v2 运行时契约
 
@@ -42,8 +42,8 @@
 - bridge 不声称能区分任务前已存在的修改与 Grok 新增的修改。Codex 任务前记录状态，任务后运行测试并检查实际 diff，再安排独立 Luna Max review。
 - 结果必须使用 grok.codex.result.v2；workspace.integrity_snapshot 为 not_collected。
 - 模型来自每次 job 的实时 catalog 与 ACP runtime default 共同证明；选择当前模型实际广告的最高 effort，不写死某个版本，不接受 fallback 或静默 model switch。
-- read-only/workspace sandbox、真实工具 ID run_terminal_cmd,Agent 禁用、最小环境、敏感文件拒绝、turn/time/output ceiling、准确 cancel、同 cwd implement 互斥和 fail-closed 模型检查不可移除。
-- 单 job 允许一个无 session/prompt 的 discovery ACP 进程，以及一个只有单 session/单 prompt 的 task ACP 进程；失败、取消、超时、空结果、模型切换或限制达到后不得自动再试。
+- read-only/workspace sandbox、真实工具 ID `run_terminal_cmd`、外部 MCP 和顶层递归调用本插件禁用；`allow_subagents` 只在调用方显式开启时允许同一 job/cwd 内的 Grok 内置 Agent。最小环境、敏感文件拒绝、turn/output ceiling、显式 deadline、准确 cancel、同 cwd implement 互斥和 fail-closed 模型检查不可移除。
+- bridge 最多同时执行 4 个独立顶层 job；同一 cwd 的 implement 仍互斥，read-only job 可以并行。每个 job 由一个无 session/prompt 的 discovery ACP 进程和一个 parent task ACP 进程负责；`allow_subagents=true` 时，内置 Agent 在该 parent job/cwd 内分解任务，不新增顶层 job。`timeout_seconds` 可省略或为 null 表示 job 不设截止，显式整数至少为 10 且无 bridge 额外最大值；`await_result` 的 1–60 秒只是单次等待窗口，不会终止 job。失败、取消、超时、空结果、模型切换或限制达到后不得自动再试。
 - Luna 的修改意见最多触发一次 correction 和一次回归复审；第二次仍需修改时停止并报告 unverified。
 
 ## 文件边界与隐私

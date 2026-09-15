@@ -38,10 +38,10 @@ Grok CLI 在本机运行，但 prompt、被选择的代码上下文、工具输�
 
 ## Grok 工具能力
 
-research、plan 和 review 使用 Grok CLI 的 read-only sandbox；implement 使用 workspace sandbox。所有模式都由 bridge 向 CLI 请求按工具 ID 移除 `run_terminal_cmd,Agent`；fake 测试不能证明真实 CLI 已执行禁用：
+research、plan 和 review 使用 Grok CLI 的 read-only sandbox；implement 使用 workspace sandbox。三个任务入口的 `allow_subagents` 默认是 `false`，只有显式为 `true` 时才允许 Grok 在同一 job/cwd 内使用内置 Agent。bridge 仍向 CLI 请求禁用 `run_terminal_cmd`、外部 MCP 和顶层递归调用本插件；fake 测试不能证明真实 CLI 的子 agent 约束继承、清理或事件来源：
 
 - 任务禁止 Grok 通过本插件递归调用另一个 Grok job；
-- 任务禁止 Grok 创建 Codex 任务或其他 Agent；
+- 任务禁止 Grok 创建新的顶层 Codex/Grok 任务或调用外部 Agent；显式开启时只能在当前 parent job/cwd 内使用内置 Agent；
 - implement 的测试、Git 查询和最终 diff 检查由 Codex 在 Grok 返回后执行；
 - 任务 prompt 只描述目标、范围、约束和验收标准，不转发整段对话。
 
@@ -95,13 +95,15 @@ implement 的安全流程由 Codex 负责：
 
 ## 循环、并发与取消
 
-- 一个 job 先使用一个无 session/prompt 的 discovery ACP 进程做模型一致性证明，再使用一个只有单 session/单 prompt 的 task ACP 进程；discovery 不接收任务包或仓库内容。
+- bridge 最多同时执行 4 个独立顶层 job；一个 job 先使用一个无 session/prompt 的 discovery ACP 进程做模型一致性证明，再使用一个只有单 session/单 prompt 的 parent task ACP 进程；discovery 不接收任务包或仓库内容。
+- `allow_subagents=true` 时，内置 Agent 在 parent job/cwd 内共享 workspace。parent sandbox、范围、显式 timeout、turn/output 约束仍是 bridge 契约，但 bridge 不宣称 child runtime 已继承这些约束；bridge 也不设置或观测子 agent 数量，不把它们当作顶层 job。
 - 同一个 cwd 同时只允许一个活动 implement job；read-only job 可以并行。
-- 默认 24 turns、30 分钟，硬上限 48 turns、60 分钟，答案和 stderr 也有界。
+- `timeout_seconds` 可省略或为 null，表示 job 不设执行截止；显式整数必须至少为 10，且没有 bridge 额外的最大值。`await_result` 的 1–60 秒只是单次等待窗口，不会终止 job；setup/probe 仍有各自本地边界。
+- 无限期 job 若 CLI 一直不完成，会持续占用一个执行槽位；四个槽位都被占用时，新 job 只能排队，bridge 不会替调用方设置 watchdog 或自动取消。生命周期负责人应保存准确 job_id，并在需要停止时使用 `cancel`；正常关闭也会尝试清理当前进程组。
 - 失败、超时、取消、模型切换、空结果和达到限制后不会自动重试或重新委派。
 - Luna 的 needs_changes 最多触发一次 correction 和一次回归复审；第二次仍需修改时停止并保持 unverified。
 - cancel 只终止准确 job 创建的进程组，不使用 pkill、killall 或模糊进程匹配。
-- MCP server 正常关闭会尝试清理对应进程组；宿主被强制终止、崩溃或断电时可能留下孤儿进程，这一残余风险不能被描述成绝对隔离。
+- MCP server 正常关闭会尝试清理对应进程组；宿主被强制终止、崩溃或断电时可能留下孤儿进程。启用内置 Agent 后，fake 测试不能证明子 agent 的清理或事件来源，这一残余风险不能被描述成绝对隔离。
 
 ## 结果收据
 
