@@ -31,13 +31,15 @@ description: 供 Codex 主代理或具备插件工具访问权的 subagent 调�
 - setup 仅作诊断，不是正常调用的必经步骤。
 - 失败、超时、取消、空结果、模型切换或达到限制后，不自动重试或重新委派。
 
+`delegate_readonly`、`spawn_readonly` 和 `spawn_worker` 都接受可选的 `allow_subagents`，默认是 `false`。显式设为 `true` 时，Grok 才能在同一 job/cwd 内使用内置 Agent 分解任务；子 agent 共享当前 workspace，调用方应只在并行关系和写入边界清楚时开启。bridge 不限制或观测内部子 agent 数量，也不把 child runtime 的 sandbox、范围、deadline、turn/output 继承、清理或事件来源当作已验证事实。terminal、外部 MCP 和顶层递归调用本插件仍禁用。
+
 ## Codex subagent 调用
 
 如果当前 Codex 宿主已把本插件的 Skill/MCP tools 暴露给 subagent，subagent 可以直接完成一次完整生命周期。宿主没有暴露工具时，subagent 应把有界任务包交回主代理，不能声称已经执行。
 
 发起 job 的调用者负责在同一 MCP server 连接内保存准确 job_id、等待、读取结果和取消。不要把 job ID 交给另一个 MCP 进程接力，也不要因为父子代理都在等待而重复发起相同 job。
 
-所有调用都必须要求 CLI 禁用 Grok 自己的 Agent/subagent。任何 Codex 调用者都不得让 Grok 递归调用本插件或其他代理。
+所有调用都必须让 CLI 禁用 terminal、外部 MCP 和顶层递归调用本插件；只有显式 `allow_subagents=true` 才允许当前 job/cwd 内的 Grok 内置 Agent。任何 Codex 调用者都不得让 Grok 创建新的顶层 job 或调用外部代理。
 
 ## 必须遵循的顺序
 
@@ -50,11 +52,11 @@ description: 供 Codex 主代理或具备插件工具访问权的 subagent 调�
    Evidence/output required:
 
 2. 只读任务调用 delegate_readonly；需要缩小 prompt 关注范围时传非空相对 paths。不要先 setup。
-3. 实现任务调用 spawn_worker。bridge 会请求 CLI 使用 workspace sandbox，并禁用 terminal、解释器、Git、测试和 Agent；fake 测试不能证明真实 CLI 的运行时限制。
-4. 立即保存准确 job_id。对该 job 调用 await_result；短任务一次等待终态，长任务只在本次等待超时后继续等待同一 job。默认等待为 30 秒；只有宿主已确认支持且留有超时余量时才选 60 秒。
+3. 实现任务调用 spawn_worker。bridge 会请求 CLI 使用 workspace sandbox，并禁用 terminal、外部 MCP、解释器、Git、测试和顶层递归调用；`allow_subagents` 只有显式开启时才允许同一 job/cwd 内的 Grok 内置 Agent。fake 测试不能证明真实 CLI 的 child runtime 限制、清理或事件来源。
+4. 立即保存准确 job_id。对该 job 调用 await_result；短任务一次等待终态，长任务只在本次等待超时后继续等待同一 job。单次等待窗口为 1–60 秒，默认 30 秒；等待到期不会终止 job。`timeout_seconds` 可省略或为 null 表示 job 不设执行截止，显式整数至少为 10 且没有 bridge 额外最大值；setup/probe 仍有各自本地边界。
 5. 读取回答前独立判断模型证据、任务结果和实际状态。收据有效不等于 Grok 的说法正确。
 
-`status`、`await_result` 的等待超时和终态响应，以及终态 `result` 会提供 `phase`、`duration_ms`、`phase_timings_ms`、`last_update_type` 和 `last_activity_age_ms`。`phase` 依次使用 `queued`、`probe`、`discovery`、`prompting`、`running`（终态保留最后执行阶段）；`duration_ms` 不含排队，`phase_timings_ms` 含排队；后两项只描述安全 ACP 活动，不是实际工具进度。内部 revision 变化仍不会结束等待或触发重派。
+`status`、`await_result` 的等待超时和终态响应，以及终态 `result` 会提供 `phase`、`duration_ms`、`phase_timings_ms`、`last_update_type` 和 `last_activity_age_ms`。`phase` 依次使用 `queued`、`probe`、`discovery`、`prompting`、`running`（终态保留最后执行阶段）；`duration_ms` 不含排队，`phase_timings_ms` 含排队；后两项只描述 parent bridge/ACP 活动，不是实际工具进度，也不提供 child runtime 的数量、清理或事件来源证明。内部 revision 变化仍不会结束等待或触发重派。
 
 ## 动态模型
 
@@ -77,8 +79,8 @@ xhigh > high > medium > low > none
 
 ## 循环、并发和变更保护
 
-- 一个 job 只有一个无 session/prompt 的 discovery ACP 进程，以及一个单 session/单 prompt 的 task ACP 进程；discovery 不发送任务包或仓库内容。
-- bridge 强制 turns、截止时间、输出上限和 correction 上限；这些护栏不是自动循环许可。
+- 顶层最多同时运行 4 个独立 job；一个 job 只有一个无 session/prompt 的 discovery ACP 进程，以及一个单 session/单 prompt 的 parent task ACP 进程；`allow_subagents=true` 时，内置 Agent 仍位于该 parent job/cwd 内，discovery 不发送任务包或仓库内容。
+- bridge 强制 turns、输出上限和 correction 上限；调用方显式提供 `timeout_seconds` 时才有 job 截止时间，这些护栏都不是自动循环许可。
 - 同一 cwd 同时只允许一个 implement job；read-only job 可以并行。
 - 不提交、推送、合并、变基、cherry-pick、reset、clean 或执行其他用户未要求的外部操作。
 - cancel 只终止准确 job 创建的进程组；不要使用 pkill、killall 或模糊匹配。
@@ -86,7 +88,7 @@ xhigh > high > medium > low > none
 
 ## 安全边界
 
-- Grok 使用 read-only 或 workspace sandbox；bridge 会向 CLI 请求按工具 ID 移除 `run_terminal_cmd,Agent`，fake 测试不能证明真实 CLI 已执行禁用。
+- Grok 使用 read-only 或 workspace sandbox；bridge 会向 CLI 请求禁用 `run_terminal_cmd`、外部 MCP 和顶层递归调用本插件，`allow_subagents` 默认关闭，显式开启才允许同一 job/cwd 内的 Grok 内置 Agent。fake 测试不能证明真实 CLI 的 child runtime 约束继承、清理或事件来源。
 - bridge 使用最小环境，不向 worker 转发 XAI_API_KEY、代理凭据和其他常见认证变量。
 - 不把 API key、密码、token、cookie、.env、SSH 私钥、证书、生产凭据、客户数据或无关个人资料放入任务。
 - 公开回答、错误和收据会递归脱敏账号路径、邮箱、URL userinfo、认证头和常见凭据形状；这不等于代码内容匿名化。

@@ -8,7 +8,7 @@ Call Grok Build 是一个 Codex 插件。它让 Codex 主代理或具备插件�
 
 - Codex 宿主把当前 workspace 的绝对路径传给插件；Grok 使用同一个目录作为进程 cwd。
 - 所有路由都是 direct。可选的 paths 只用于告诉 Grok 关注哪些相对路径，不是访问控制，也不会把代码复制到另一目录。
-- read-only 任务使用 read-only sandbox；implement 使用 workspace sandbox。bridge 会向 CLI 请求按工具 ID 移除 `run_terminal_cmd,Agent`；fake 测试不能证明真实 CLI 已执行禁用。
+- read-only 任务使用 read-only sandbox；implement 使用 workspace sandbox。bridge 禁用 `run_terminal_cmd`、外部 MCP 和顶层递归调用本插件；三个任务入口的 `allow_subagents` 默认关闭，显式开启才允许 Grok 在同一 job/cwd 内使用内置 Agent。fake 测试不能证明真实 CLI 的子 agent 约束继承、清理或事件来源。
 - bridge 不扫描 Git 或整个目录内容；结果中的 workspace.integrity_snapshot 固定为 not_collected。
 - implement 可以在当前目录直接工作，包括 primary checkout、已有修改和非 Git 目录。Codex 会在任务前记录工作区现状，任务后运行测试，并交给 gpt-5.6-luna 的 max reasoning 做独立 review；bridge 不声称能自动区分哪些修改来自 Grok。
 - 用户明确点名 Grok Build 后，该请求覆盖同一当前 workspace 中完成这次有界流程所需的代码和上下文，不会仅因仓库是私有仓库或内容会发送到 xAI 再次询问。
@@ -59,7 +59,7 @@ Codex 随后复现 high/critical 结论。
 父任务不要为同一目标重复提交。
 ~~~
 
-主代理和 subagent 使用同一套工具契约。发起调用的代理负责同一 MCP 连接中的 job_id、等待、结果读取和取消；连接结束后不要让其他进程接力旧 job。所有调用都必须要求 CLI 禁用 Grok 自己的 Agent/subagent，任何调用者都不得递归调用本插件。
+主代理和 subagent 使用同一套工具契约。发起调用的代理负责同一 MCP 连接中的 job_id、等待、结果读取和取消；连接结束后不要让其他进程接力旧 job。`allow_subagents` 默认关闭，只有任务适合并行且写入边界清楚时才显式开启；它只允许同一 job/cwd 内的 Grok 内置 Agent，不改变 terminal、外部 MCP 或顶层递归调用本插件仍被禁用的约束。
 
 ## 四类任务
 
@@ -95,11 +95,11 @@ Codex 随后复现 high/critical 结论。
 
 ~~~text
 让 Grok Build 在当前 workspace 实现这个变更。
-只修改完成目标所需的文件，不要提交、推送、合并、变基或调用 Agent。
+只修改完成目标所需的文件，不要提交、推送、合并或变基。只有任务适合并行且写入边界清楚时，才在调用中显式传 `allow_subagents=true`。
 完成后 Codex 运行相关测试，并让 gpt-5.6-luna 使用 max reasoning 独立 review 实际 diff。
 ~~~
 
-implement 允许当前目录已有 staged、unstaged 或 untracked 修改，也允许非 Git 目录。开始前和结束后应由 Codex 记录并比较工作区状态；如果 Luna 返回 needs_changes，最多安排一次有明确 parent 的 correction，再做一次 Grok 回归复审和一次 Luna Max 终审。失败、取消、超时或空结果不会自动重试或重新委派。
+implement 允许当前目录已有 staged、unstaged 或 untracked 修改，也允许非 Git 目录。三个任务入口的 `allow_subagents` 默认是 `false`；开启后，多个 Grok 内置 Agent 会共享当前 job/cwd 的 workspace。parent sandbox、范围、显式 deadline、turn 和 output 约束仍是 bridge 契约，但 bridge 不宣称 child runtime 已继承这些约束，也不限制或观测内部子 agent 数量；调用方应只在并行关系和写入边界清楚时开启。开始前和结束后应由 Codex 记录并比较工作区状态；如果 Luna 返回 needs_changes，最多安排一次有明确 parent 的 correction，再做一次 Grok 回归复审和一次 Luna Max 终审。失败、取消、超时或空结果不会自动重试或重新委派。
 
 ## 调用结构
 
@@ -121,9 +121,9 @@ Grok Build CLI / ACP stdio
 Codex 独立核验；实现还需 Luna Max
 ~~~
 
-每个 job 先启动一次无 session、无 prompt 的 discovery ACP 进程，用于做 runtime model/effort 一致性证明；随后只启动一个 task ACP 进程，其中只有一个 session 和一条 prompt。discovery 不发送任务包或仓库内容。Codex 可以等待同一 job 的结果，但内部 revision 变化不代表需要重新调用 Grok。正常回答默认限制为 16,000 字符，await_result 默认只带 12,000 字符答案页；需要更长原文时才显式分页读取，避免把大段结果反复塞回 Codex 上下文。
+每个 job 先启动一次无 session、无 prompt 的 discovery ACP 进程，用于做 runtime model/effort 一致性证明；随后只启动一个 parent task ACP 进程，其中只有一个 session 和一条 parent prompt。`allow_subagents=true` 时，Grok 内置 Agent 在这个 parent job/cwd 内分解任务，不创建新的顶层 job；discovery 不发送任务包或仓库内容。Codex 可以等待同一 job 的结果，但内部 revision 变化不代表需要重新调用 Grok。正常回答默认限制为 16,000 字符，await_result 默认只带 12,000 字符答案页；需要更长原文时才显式分页读取，避免把大段结果反复塞回 Codex 上下文。
 
-status、await_result 的等待超时和终态响应，以及 result 的终态收据会提供运行诊断：`phase`（`queued` / `probe` / `discovery` / `prompting` / `running`，终态保留最后执行阶段）、`duration_ms`（排队为 `null`，运行中递增，终态冻结且不含排队）、`phase_timings_ms`（含 `queued` 的阶段累计时间，当前阶段实时更新）、`last_update_type`（安全白名单中的非 thought ACP 事件名，不是实际工具进度）和 `last_activity_age_ms`（距最近安全 ACP 事件的毫秒数，无事件为 `null`，终态冻结）。这些字段只用于诊断，不改变等待或重派语义。
+status、await_result 的等待超时和终态响应，以及 result 的终态收据会提供运行诊断：`phase`（`queued` / `probe` / `discovery` / `prompting` / `running`，终态保留最后执行阶段）、`duration_ms`（排队为 `null`，运行中递增，终态冻结且不含排队）、`phase_timings_ms`（含 `queued` 的阶段累计时间，当前阶段实时更新）、`last_update_type`（安全白名单中的非 thought ACP 事件名，不是实际工具进度）和 `last_activity_age_ms`（距最近安全 ACP 事件的毫秒数，无事件为 `null`，终态冻结）。这些字段只用于诊断，不改变等待或重派语义；启用子 agent 时也不提供子 agent 数量或事件来源证明。
 
 ## 动态模型选择
 
@@ -146,9 +146,11 @@ Grok 的答案、finding 和修改都只是候选结果。收据格式正确不�
 
 ## 循环、并发和停止
 
-- 同一个 workspace 同时只允许一个活动 implement job；read-only job 可以并行。
-- 每个 job 默认 24 turns、默认 30 分钟；硬上限分别为 48 turns 和 60 分钟。输出有独立上限。
-- 单 job 只有一个 ACP prompt；自动重试和自动重新委派为零。
+- bridge 最多同时执行 4 个独立顶层 job；同一个 workspace/cwd 同时只允许一个活动 implement job，read-only job 可以并行。
+- 每个 job 默认不设执行截止；`timeout_seconds` 可省略或为 null，显式整数必须至少为 10 且没有 bridge 额外最大值。turn 和 output 仍有独立上限。
+- `await_result` 的 1–60 秒只是单次等待窗口，不会终止 job；setup/probe 仍有各自本地边界。
+- 四个无限期 job 若一直不结束，会持续占满执行槽位，使后续 job 排队；调用方可用准确 job_id 取消，不会自动设置 watchdog 或重新委派。
+- 单 job 只有一个 parent ACP prompt；`allow_subagents=true` 时可以在该 job/cwd 内使用内置 Agent，但不增加顶层 job，也没有 bridge 内部子 agent 数量上限或观测。自动重试和自动重新委派为零。
 - Luna 发现问题后最多一次 correction 和一次回归复审；这不是循环许可。
 - cancel 只终止准确 job 创建的进程组，不使用模糊进程匹配。
 - 取消、超时、模型切换、turn/output limit、空回答或 MCP 进程关闭都不会被报告为成功。

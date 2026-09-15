@@ -8,14 +8,14 @@
 - Codex 宿主自动传入当前 workspace 的绝对 cwd；所有任务都使用 direct。
 - 不复制代码、不建立额外目录、不做 Git 或全目录内容扫描。
 - 可选 paths 只提示 prompt 的关注范围，不改变 cwd 或访问控制。
-- 一个 job 只有一个生命周期负责人、一次无 session/prompt 的 discovery ACP 模型证明，以及一个单 session/单 prompt 的 task ACP 进程。
+- 顶层最多同时运行 4 个独立 job；一个 job 只有一个生命周期负责人、一次无 session/prompt 的 discovery ACP 模型证明，以及一个单 session/单 prompt 的 parent task ACP 进程。三个入口的 `allow_subagents` 默认关闭，显式开启时，Grok 内置 Agent 仍在同一 parent job/cwd 内运行。
 - 失败、超时、取消、模型切换或限制达到后不自动重试或重新委派。
 
 ## 工具契约
 
 ### delegate_readonly
 
-delegate_readonly(task, cwd, mode, paths?) 是研究、计划和 review 的高阶只读入口，立即返回 job_id。mode 只能是 research、plan 或 review。cwd 是宿主当前 workspace 的绝对路径；用户通常不需要手写它。
+delegate_readonly(task, cwd, mode, paths?, allow_subagents=false) 是研究、计划和 review 的高阶只读入口，立即返回 job_id。mode 只能是 research、plan 或 review。cwd 是宿主当前 workspace 的绝对路径；用户通常不需要手写它。`allow_subagents=true` 才允许同一 job/cwd 内的 Grok 内置 Agent；调用方应只在并行关系和写入边界清楚时开启。
 
 paths 可省略，也可提供非空相对路径列表。它只用于让 Grok 聚焦 prompt，不改变 direct 路由，不复制文件，不产生独立访问边界。
 
@@ -23,21 +23,21 @@ paths 可省略，也可提供非空相对路径列表。它只用于让 Grok �
 
 ### spawn_readonly
 
-spawn_readonly(task, cwd, mode) 是兼容入口，只接受 research、plan 或 review。新调用优先使用 delegate_readonly。
+spawn_readonly(task, cwd, mode, allow_subagents=false) 是兼容入口，只接受 research、plan 或 review。新调用优先使用 delegate_readonly。
 
 ### spawn_worker
 
-spawn_worker(task, cwd) 启动 implement 任务，直接在当前 workspace 使用 workspace sandbox。它允许 primary checkout、已有 staged/unstaged/untracked 修改和非 Git 目录。任务只允许 Grok 使用文件工具；bridge 请求 CLI 禁用 terminal、Agent 和外部 MCP，任务禁止运行解释器、Git 或测试。fake 测试不能证明真实 CLI 已执行这些限制。
+spawn_worker(task, cwd, allow_subagents=false) 启动 implement 任务，直接在当前 workspace 使用 workspace sandbox。它允许 primary checkout、已有 staged/unstaged/untracked 修改和非 Git 目录。任务只允许 Grok 使用文件工具；bridge 请求 CLI 禁用 terminal、外部 MCP 和顶层递归调用本插件，显式 `allow_subagents=true` 才允许同一 job/cwd 内的 Grok 内置 Agent。任务禁止运行解释器、Git 或测试；fake 测试不能证明真实 CLI 的 child runtime 约束继承、清理或事件来源。
 
 correction_of_job_id 只用于 Luna 指出的那一次有界修复，必须指向同一 cwd、紧邻且成功的 implement job。最多一次 correction；失败 job 不能作为 parent。
 
 ### await_result
 
-await_result(job_id, after_revision, max_wait_seconds, offset, limit) 对准确 job 做有界等待。短任务一次等到终态；长任务只在这次等待超时后继续等待同一个 job。running 或 model revision 变化不会触发新 job，终态调用幂等。offset/limit 只用于答案分页。等待超时和终态响应会带 `phase`、`duration_ms`、`phase_timings_ms`、`last_update_type` 和 `last_activity_age_ms`；默认等待仍为 30 秒，只有宿主已确认支持且留有超时余量时才选 60 秒。
+await_result(job_id, after_revision, max_wait_seconds, offset, limit) 对准确 job 做有界等待。短任务一次等到终态；长任务只在这次等待超时后继续等待同一个 job。`max_wait_seconds` 的范围是 1–60 秒，默认 30 秒，等待到期只结束本次等待，不会终止 job。running 或 model revision 变化不会触发新 job，终态调用幂等。offset/limit 只用于答案分页。等待超时和终态响应会带 `phase`、`duration_ms`、`phase_timings_ms`、`last_update_type` 和 `last_activity_age_ms`。
 
 ### setup
 
-setup(cwd, timeout_seconds) 是可选诊断，用于刷新模型目录和进行无 prompt ACP 初始化证明。每个实际 job 仍会自己证明模型，因此正常流程不需要先 setup。
+setup(cwd, timeout_seconds) 是可选诊断，用于在本地有限窗口内刷新模型目录和进行无 prompt ACP 初始化证明。每个实际 job 仍会自己证明模型，因此正常流程不需要先 setup。
 
 ### status、result、list、cancel
 
@@ -58,13 +58,13 @@ xhigh > high > medium > low > none
 
 catalog、ACP、完成信息或 model-switch 不一致，或出现 fallback、未知 effort、空结果时，任务失败关闭或保持 unverified。
 
-research、plan、review 使用 read-only sandbox；implement 使用 workspace sandbox。所有任务都由 bridge 向 CLI 请求按工具 ID 移除 `run_terminal_cmd,Agent`，防止 Grok 递归调用本插件或其他代理；fake 测试不能证明真实 CLI 已执行禁用。
+research、plan、review 使用 read-only sandbox；implement 使用 workspace sandbox。bridge 向 CLI 请求禁用 `run_terminal_cmd`、外部 MCP 和顶层递归调用本插件；`allow_subagents` 默认关闭，显式开启才允许同一 job/cwd 内的 Grok 内置 Agent。parent sandbox、范围、显式 timeout、turn/output 约束保持不变；fake 测试不能证明真实 CLI 的 child runtime 约束继承、清理或事件来源。
 
 ## Codex subagent
 
 如果宿主向 Codex subagent 暴露本插件工具，subagent 可以直接成为一次 job 的生命周期负责人；否则它应把任务包交回主代理。父任务不要让多个调用者为同一目标重复发起。
 
-Codex subagent 和 Grok subagent 是两件事：前者可作为插件调用者，后者必须由每次调用请求 CLI 禁用。插件不检查主代理身份，但每个调用者只操作自己准确持有的 job_id。
+Codex subagent 和 Grok subagent 是两件事：前者可作为插件调用者，后者默认关闭，只有 `allow_subagents=true` 才能在同一 job/cwd 内使用。terminal、外部 MCP 和顶层递归调用本插件仍禁用；插件不检查主代理身份，但每个调用者只操作自己准确持有的 job_id。
 
 ## 实现后的核验
 
