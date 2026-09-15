@@ -19,6 +19,7 @@ import grok_build_bridge as bridge  # noqa: E402
 from grok_build_bridge import (  # noqa: E402
     BridgeError,
     DEFAULT_AWAIT_RESULT_CHARS,
+    DEFAULT_MAX_PARALLEL_JOBS,
     DEFAULT_OUTPUT_CHARS,
     JobManager,
     MAX_SCOPE_PATH_HINTS,
@@ -227,6 +228,8 @@ class DirectCwdBridgeTests(unittest.TestCase):
         self.assertEqual(result["workspace"]["integrity_snapshot"], "not_collected")
         self.assertFalse(result["verification"]["verified"])
         self.assertFalse(result["verification"]["review_required"])
+        self.assertIsNone(result["loop_guard"]["timeout_seconds"])
+        self.assertFalse(result["subagent_policy"]["allowed"])
 
     def test_non_git_implement_writes_to_exact_cwd(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -372,6 +375,19 @@ class DirectCwdBridgeTests(unittest.TestCase):
         self.assertIn("do not change or restrict the working directory", prompt)
         self.assertNotIn(str(cwd), prompt)
 
+        parallel_prompt = _build_task_prompt(
+            "review",
+            "Review independent areas in parallel",
+            cwd,
+            "grok-9.2",
+            "xhigh",
+            allow_subagents=True,
+        )
+        self.assertIn("built-in Agent tool is explicitly allowed", parallel_prompt)
+        self.assertIn("Every subagent must inherit the parent mode", parallel_prompt)
+        self.assertIn("does not enforce an internal subagent count", parallel_prompt)
+        self.assertNotIn("subagent spawning are disabled", parallel_prompt)
+
     def test_acp_command_keeps_sandbox_and_recursion_guards(self) -> None:
         readonly = build_acp_command(
             binary=str(FAKE_GROK),
@@ -393,6 +409,16 @@ class DirectCwdBridgeTests(unittest.TestCase):
             model="grok-9.2",
             reasoning_effort="xhigh",
         )
+        subagent_worker = build_acp_command(
+            binary=str(FAKE_GROK),
+            cwd=Path("."),
+            mode="implement",
+            max_turns=24,
+            web_access=False,
+            model="grok-9.2",
+            reasoning_effort="xhigh",
+            allow_subagents=True,
+        )
         self.assertEqual(readonly[readonly.index("--sandbox") + 1], "read-only")
         self.assertEqual(worker[worker.index("--sandbox") + 1], "workspace")
         for command in (readonly, worker):
@@ -404,6 +430,109 @@ class DirectCwdBridgeTests(unittest.TestCase):
             self.assertEqual(command[command.index("--reasoning-effort") + 1], "xhigh")
         self.assertIn("--no-memory", readonly)
         self.assertIn("--no-auto-update", readonly)
+        self.assertNotIn("--no-subagents", subagent_worker)
+        self.assertEqual(
+            subagent_worker[subagent_worker.index("--disallowed-tools") + 1],
+            "run_terminal_cmd",
+        )
+        self.assertNotIn("Agent", subagent_worker)
+
+    def test_default_manager_runs_four_jobs_concurrently(self) -> None:
+        manager = JobManager()
+        original_run_job = manager._run_job
+        entered = 0
+        entered_lock = threading.Lock()
+        four_started = threading.Event()
+        release_peers = threading.Event()
+
+        def wait_for_peers(job: bridge.Job) -> None:
+            nonlocal entered
+            with entered_lock:
+                entered += 1
+                if entered == DEFAULT_MAX_PARALLEL_JOBS:
+                    four_started.set()
+            if not four_started.wait(timeout=5):
+                raise AssertionError("Default job pool did not start four jobs concurrently")
+            if not release_peers.wait(timeout=5):
+                raise AssertionError("Default job pool did not release its queued jobs")
+            original_run_job(job)
+
+        try:
+            with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+                manager, "_run_job", side_effect=wait_for_peers
+            ):
+                jobs = [
+                    manager.spawn(mode="plan", task=f"plan {index}", cwd=directory)
+                    for index in range(DEFAULT_MAX_PARALLEL_JOBS)
+                ]
+                self.assertTrue(four_started.wait(timeout=5))
+                fifth = manager.spawn(mode="plan", task="queued plan", cwd=directory)
+                self.assertEqual(manager.status(fifth["job_id"])["status"], "queued")
+                queued_fd = manager.get(fifth["job_id"]).cwd_fd
+                self.assertIsNotNone(queued_fd)
+                cancelled = manager.cancel(fifth["job_id"])
+                self.assertEqual(cancelled["status"], "cancelled")
+                self.assertEqual(cancelled["errors"][0]["code"], "E_CANCELLED")
+                self.assertIsNone(manager.get(fifth["job_id"]).cwd_fd)
+                with self.assertRaises(OSError):
+                    os.fstat(queued_fd)
+                replacement = manager.spawn(mode="plan", task="next plan", cwd=directory)
+                self.assertEqual(manager.status(replacement["job_id"])["status"], "queued")
+                release_peers.set()
+                for job in jobs:
+                    self.assertEqual(
+                        wait_terminal(manager, job["job_id"], timeout=10)["status"],
+                        "succeeded",
+                    )
+                self.assertEqual(
+                    wait_terminal(manager, replacement["job_id"], timeout=10)["status"],
+                    "succeeded",
+                )
+        finally:
+            release_peers.set()
+            manager.close()
+
+    def test_subagent_opt_in_is_reported_in_status_and_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = JobManager(max_workers=1)
+            try:
+                spawned = manager.spawn(
+                    mode="plan",
+                    task="parallel plan",
+                    cwd=directory,
+                    allow_subagents=True,
+                )
+                self.assertTrue(spawned["subagent_policy"]["allowed"])
+                self.assertFalse(spawned["subagent_policy"]["runtime_execution_attested"])
+                self.assertIsNone(
+                    spawned["subagent_policy"]["bridge_enforced_max_subagents"]
+                )
+                terminal = wait_terminal(manager, spawned["job_id"])
+                result = manager.result(spawned["job_id"])
+            finally:
+                manager.close()
+        self.assertEqual(terminal["status"], "succeeded", terminal)
+        self.assertTrue(result["subagent_policy"]["explicit_opt_in"])
+        self.assertFalse(result["subagent_policy"]["runtime_execution_attested"])
+        self.assertEqual(result["loop_guard"]["acp_counts_scope"], "parent_job_only")
+        self.assertTrue(result["loop_guard"]["internal_subagents_allowed"])
+
+    def test_explicit_deadline_has_no_upper_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manager = JobManager(max_workers=1)
+            try:
+                spawned = manager.spawn(
+                    mode="plan",
+                    task="short plan",
+                    cwd=directory,
+                    timeout_seconds=100_000,
+                )
+                status = wait_terminal(manager, spawned["job_id"])
+                result = manager.result(spawned["job_id"])
+            finally:
+                manager.close()
+        self.assertEqual(status["status"], "succeeded", status)
+        self.assertEqual(result["loop_guard"]["timeout_seconds"], 100_000)
 
     def test_same_cwd_allows_only_one_active_implement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -939,6 +1068,23 @@ class DirectCwdBridgeTests(unittest.TestCase):
                         },
                         "E_ROUTE",
                     ),
+                    (
+                        {
+                            "mode": "review",
+                            "task": "x",
+                            "cwd": directory,
+                            "allow_subagents": "yes",
+                        },
+                        "E_SUBAGENTS",
+                    ),
+                    (
+                        {"mode": "plan", "task": "x", "cwd": directory, "timeout_seconds": 9},
+                        "E_TIMEOUT_VALUE",
+                    ),
+                    (
+                        {"mode": "plan", "task": "x", "cwd": directory, "timeout_seconds": True},
+                        "E_TIMEOUT_VALUE",
+                    ),
                 )
                 for kwargs, code in cases:
                     with self.subTest(code=code), self.assertRaises(BridgeError) as caught:
@@ -981,6 +1127,18 @@ class MCPContractTests(unittest.TestCase):
             ]["default"],
             16_000,
         )
+        self.assertFalse(
+            tools["delegate_readonly"]["inputSchema"]["properties"][
+                "allow_subagents"
+            ]["default"]
+        )
+        timeout_schema = tools["delegate_readonly"]["inputSchema"]["properties"][
+            "timeout_seconds"
+        ]
+        self.assertEqual(timeout_schema["type"], ["integer", "null"])
+        self.assertIsNone(timeout_schema["default"])
+        self.assertNotIn("maximum", timeout_schema)
+        self.assertEqual(server.MANAGER.max_workers, DEFAULT_MAX_PARALLEL_JOBS)
         self.assertEqual(
             tools["await_result"]["inputSchema"]["properties"]["limit"][
                 "default"

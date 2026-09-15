@@ -29,13 +29,13 @@ REASONING_EFFORT_PREFERENCE = ("xhigh", "high", "medium", "low", "none")
 READ_ONLY_MODES = {"research", "plan", "review"}
 ALL_MODES = READ_ONLY_MODES | {"implement"}
 TERMINAL_STATES = {"succeeded", "failed", "timed_out", "cancelled"}
-DEFAULT_TIMEOUT_SECONDS = 1_800
-MAX_TIMEOUT_SECONDS = 3_600
+DEFAULT_TIMEOUT_SECONDS: Optional[int] = None
 DEFAULT_SETUP_TIMEOUT_SECONDS = 120
 MAX_SETUP_TIMEOUT_SECONDS = 180
 DEFAULT_MAX_TURNS = 24
 MAX_AGENT_TURNS = 48
 MAX_CORRECTION_ROUNDS = 1
+DEFAULT_MAX_PARALLEL_JOBS = 4
 DEFAULT_OUTPUT_CHARS = 16_000
 MAX_OUTPUT_CHARS = 200_000
 MAX_TASK_CHARS = 100_000
@@ -185,9 +185,10 @@ class JobCancelled(BridgeError):
 
 
 class JobTimedOut(BridgeError):
-    def __init__(self, timeout_seconds: int) -> None:
+    def __init__(self, timeout_seconds: Optional[int]) -> None:
         super().__init__(
-            "E_TIMEOUT", f"The Grok task exceeded {timeout_seconds} seconds."
+            "E_TIMEOUT",
+            f"The Grok task exceeded its explicit {timeout_seconds}-second deadline.",
         )
 
 
@@ -1075,7 +1076,12 @@ def _validate_cwd(cwd: str) -> Path:
 
 
 def _validate_request(
-    *, mode: str, task: str, cwd: str, timeout_seconds: int, max_output_chars: int
+    *,
+    mode: str,
+    task: str,
+    cwd: str,
+    timeout_seconds: Optional[int],
+    max_output_chars: int,
 ) -> Path:
     if mode not in ALL_MODES:
         raise BridgeError("E_MODE", f"Unsupported mode: {mode}")
@@ -1083,8 +1089,13 @@ def _validate_request(
         raise BridgeError("E_TASK", "task must be a non-empty string.")
     if "\x00" in task or len(task) > MAX_TASK_CHARS:
         raise BridgeError("E_TASK", f"task must be at most {MAX_TASK_CHARS} characters and contain no NUL.")
-    if type(timeout_seconds) is not int or not 10 <= timeout_seconds <= MAX_TIMEOUT_SECONDS:
-        raise BridgeError("E_TIMEOUT_VALUE", f"timeout_seconds must be 10..{MAX_TIMEOUT_SECONDS}.")
+    if timeout_seconds is not None and (
+        type(timeout_seconds) is not int or timeout_seconds < 10
+    ):
+        raise BridgeError(
+            "E_TIMEOUT_VALUE",
+            "timeout_seconds must be omitted/null for no deadline or an integer of at least 10.",
+        )
     if type(max_output_chars) is not int or not 1_000 <= max_output_chars <= MAX_OUTPUT_CHARS:
         raise BridgeError("E_OUTPUT_LIMIT", f"max_output_chars must be 1000..{MAX_OUTPUT_CHARS}.")
     return _validate_cwd(cwd)
@@ -1210,6 +1221,7 @@ def _build_task_prompt(
     reasoning_effort: str,
     known_paths: Sequence[str] = (),
     scope_paths: Sequence[str] = (),
+    allow_subagents: bool = False,
 ) -> str:
     mode_rules = {
         "research": (
@@ -1227,10 +1239,18 @@ def _build_task_prompt(
         "implement": (
             "Implement the requested change directly inside the current working directory using file read/edit/write tools. "
             "Preserve unrelated existing changes and report every file you intentionally changed. "
-            "Shell, interpreters, Git, network commands, and recursive agent launches are disabled; Codex will run tests. "
+            "Shell, interpreters, Git, and network commands are disabled; Codex will run tests. "
             "Do not commit, push, merge, rebase, cherry-pick, reset, clone, or create/remove worktrees."
         ),
     }[mode]
+    subagent_rule = (
+        "Grok's built-in Agent tool is explicitly allowed for this job. Use it only to split independent work "
+        "inside this same task and working directory. Every subagent must inherit the parent mode, sandbox, scope, "
+        "secret-handling rules, turn ceiling, and any caller-supplied deadline. Do not invoke this plugin, external MCP servers, Codex tasks, "
+        "or another top-level Grok job. The bridge does not enforce an internal subagent count."
+        if allow_subagents
+        else "Grok's built-in Agent tool and subagent spawning are disabled for this job."
+    )
     safe_task = _redact_known_secrets(task.strip(), cwd, known_paths)
     scope_line = ""
     if scope_paths:
@@ -1247,9 +1267,10 @@ def _build_task_prompt(
         f"MODE: {mode}\nWORKING DIRECTORY: . (the ACP process target; do not report its absolute path)\n"
         f"{scope_line}"
         f"RUNTIME MODEL: {model}\nREASONING EFFORT: {reasoning_effort}\n\n"
-        f"{mode_rules}\n\n"
-        "This is one bounded attempt. Do not invoke another Codex/Grok delegation, retry this task, or loop on a blocker. "
-        "Stop and report the blocker if the task cannot be completed within the configured turn and time limits.\n\n"
+        f"{mode_rules}\n{subagent_rule}\n\n"
+        "This is one bounded top-level attempt. Do not invoke this plugin, create a Codex task, start another top-level "
+        "Grok job, retry this task, or loop on a blocker. "
+        "Stop and report the blocker if the task cannot be completed within the turn ceiling or any caller-supplied deadline.\n\n"
         "Return a concise public result with these sections when applicable: RESULT, EVIDENCE, FILES CHANGED, TESTS, RISKS. "
         "Do not include hidden reasoning or chain-of-thought.\n\n"
         "TASK PACKET:\n"
@@ -1363,6 +1384,7 @@ def build_acp_command(
     reasoning_effort: Optional[str] = None,
     supports_no_memory: bool = False,
     supports_no_auto_update: bool = False,
+    allow_subagents: bool = False,
 ) -> List[str]:
     if (model is None) != (reasoning_effort is None):
         raise BridgeError(
@@ -1376,17 +1398,21 @@ def build_acp_command(
         str(cwd),
         "--sandbox",
         sandbox,
-        "--no-subagents",
         "--max-turns",
         str(max_turns),
     ]
+    if not allow_subagents:
+        command.append("--no-subagents")
     if supports_no_memory:
         command.append("--no-memory")
     if supports_no_auto_update:
         command.append("--no-auto-update")
-    # The terminal and recursive-agent tools are disabled for every mode. Pattern
-    # denies remain defense in depth but cannot normalize arbitrary wrappers.
-    command.extend(["--disallowed-tools", "run_terminal_cmd,Agent"])
+    # Terminal remains disabled for every mode. Agent is available only after an
+    # explicit per-job opt-in; pattern denies remain defense in depth.
+    disallowed_tools = (
+        "run_terminal_cmd" if allow_subagents else "run_terminal_cmd,Agent"
+    )
+    command.extend(["--disallowed-tools", disallowed_tools])
     if not web_access:
         command.append("--disable-web-search")
     for rule in denies:
@@ -1563,7 +1589,7 @@ class ACPClient:
         self._stderr_scan_tail = ""
         self.protocol_error: Optional[str] = None
         self._reader_done = threading.Event()
-        self._timeout_seconds = DEFAULT_TIMEOUT_SECONDS
+        self._timeout_seconds: Optional[int] = DEFAULT_TIMEOUT_SECONDS
         self._reader_thread: Optional[threading.Thread] = None
         self._stderr_thread: Optional[threading.Thread] = None
 
@@ -1857,7 +1883,7 @@ class ACPClient:
         *,
         expected_catalog_default: Optional[str],
         deadline: float,
-        timeout_seconds: int,
+        timeout_seconds: Optional[int],
     ) -> Dict[str, Any]:
         self._timeout_seconds = timeout_seconds
         try:
@@ -1901,7 +1927,7 @@ class ACPClient:
         self,
         prompt: str,
         deadline: float,
-        timeout_seconds: int,
+        timeout_seconds: Optional[int],
         *,
         expected_model: str,
         expected_reasoning_effort: str,
@@ -1910,13 +1936,18 @@ class ACPClient:
         _check_operation_boundary(deadline, self.cancel_event)
         self.start()
         try:
+            handshake_deadline = (
+                deadline
+                if timeout_seconds is None
+                else min(deadline, time.monotonic() + 30)
+            )
             init = self.request(
                 "initialize",
                 {
                     "protocolVersion": 1,
                     "clientCapabilities": {},
                 },
-                min(deadline, time.monotonic() + 30),
+                handshake_deadline,
             )
             runtime_policy = _extract_runtime_model_policy(
                 init, expected_catalog_default=expected_model
@@ -1952,7 +1983,7 @@ class ACPClient:
             self.request(
                 "authenticate",
                 {"methodId": auth_method, "_meta": {"headless": True}},
-                min(deadline, time.monotonic() + 30),
+                handshake_deadline,
             )
             session_cwd = (
                 _fd_directory_path(self.cwd_fd)
@@ -1965,7 +1996,7 @@ class ACPClient:
                     "cwd": session_cwd,
                     "mcpServers": [],
                 },
-                min(deadline, time.monotonic() + 30),
+                handshake_deadline,
             )
             if self.cwd_fd is not None:
                 _assert_stable_directory(self.cwd, self.cwd_fd)
@@ -2043,7 +2074,7 @@ def resolve_runtime_model_policy(
     cancel_event: threading.Event,
     process_callback: Callable[[subprocess.Popen[bytes]], None],
     deadline: float,
-    timeout_seconds: int,
+    timeout_seconds: Optional[int],
 ) -> Dict[str, Any]:
     command = build_acp_command(
         binary=probe["binary"],
@@ -2180,12 +2211,13 @@ class Job:
     job_id: str
     mode: str
     cwd: str
-    timeout_seconds: int
+    timeout_seconds: Optional[int]
     max_output_chars: int
     web_access: bool
     max_turns: int
     cwd_fd: Optional[int] = field(repr=False)
     task: str = field(repr=False)
+    allow_subagents: bool = False
     correction_of_job_id: Optional[str] = None
     correction_root_job_id: Optional[str] = None
     correction_round: int = 0
@@ -2290,6 +2322,13 @@ class Job:
                 else None
             ),
             "sandbox": "workspace" if self.mode == "implement" else "read-only",
+            "subagent_policy": {
+                "allowed": self.allow_subagents,
+                "explicit_opt_in": self.allow_subagents,
+                "runtime_execution_attested": False,
+                "bridge_enforced_max_subagents": None,
+                "observed_subagent_count": None,
+            },
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -2309,6 +2348,8 @@ class Job:
                 "discovery_acp_processes": 1,
                 "task_acp_processes": 1,
                 "task_acp_sessions": 1,
+                "acp_counts_scope": "parent_job_only",
+                "internal_subagents_allowed": self.allow_subagents,
                 "automatic_retries": 0,
                 "automatic_redelegation": False,
                 "max_turns": self.max_turns,
@@ -2331,7 +2372,9 @@ class Job:
 
 
 class JobManager:
-    def __init__(self, max_workers: int = 2, max_jobs: int = 100) -> None:
+    def __init__(
+        self, max_workers: int = DEFAULT_MAX_PARALLEL_JOBS, max_jobs: int = 100
+    ) -> None:
         self.max_workers = max_workers
         self.max_jobs = max_jobs
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="grok-build")
@@ -2407,10 +2450,11 @@ class JobManager:
         mode: str,
         task: str,
         cwd: str,
-        timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+        timeout_seconds: Optional[int] = DEFAULT_TIMEOUT_SECONDS,
         max_output_chars: int = DEFAULT_OUTPUT_CHARS,
         web_access: Optional[bool] = None,
         max_turns: int = DEFAULT_MAX_TURNS,
+        allow_subagents: bool = False,
         correction_of_job_id: Optional[str] = None,
         paths: Optional[Sequence[Any]] = None,
         delegate_readonly: bool = False,
@@ -2425,6 +2469,10 @@ class JobManager:
         if type(max_turns) is not int or not 1 <= max_turns <= MAX_AGENT_TURNS:
             raise BridgeError(
                 "E_MAX_TURNS", f"max_turns must be 1..{MAX_AGENT_TURNS}."
+            )
+        if type(allow_subagents) is not bool:
+            raise BridgeError(
+                "E_SUBAGENTS", "allow_subagents must be a boolean when provided."
             )
         if web_access is not None and not isinstance(web_access, bool):
             raise BridgeError("E_WEB_ACCESS", "web_access must be a boolean when provided.")
@@ -2503,6 +2551,7 @@ class JobManager:
                     max_output_chars=max_output_chars,
                     web_access=effective_web_access,
                     max_turns=max_turns,
+                    allow_subagents=allow_subagents,
                     correction_of_job_id=correction_of_job_id,
                     correction_root_job_id=correction_root_job_id,
                     correction_round=correction_round,
@@ -2535,7 +2584,11 @@ class JobManager:
         copy, hash or otherwise preflight repository contents.
         """
         started_monotonic = time.monotonic()
-        overall_deadline = started_monotonic + job.timeout_seconds
+        overall_deadline = (
+            float("inf")
+            if job.timeout_seconds is None
+            else started_monotonic + job.timeout_seconds
+        )
         cwd = Path(job.cwd)
         cwd_fd = job.cwd_fd
         with self._lock:
@@ -2612,13 +2665,18 @@ class JobManager:
             if remaining_seconds <= 0:
                 raise JobTimedOut(job.timeout_seconds)
             set_phase("discovery")
+            discovery_deadline = (
+                overall_deadline
+                if job.timeout_seconds is None
+                else min(overall_deadline, time.monotonic() + 30)
+            )
             model_policy = resolve_runtime_model_policy(
                 probe=probe,
                 cwd=cwd,
                 cwd_fd=cwd_fd,
                 cancel_event=job.cancel_event,
                 process_callback=set_process,
-                deadline=min(overall_deadline, time.monotonic() + 30),
+                deadline=discovery_deadline,
                 timeout_seconds=job.timeout_seconds,
             )
             _check_operation_boundary(overall_deadline, job.cancel_event)
@@ -2640,6 +2698,7 @@ class JobManager:
                 reasoning_effort=reasoning_effort,
                 supports_no_memory=probe["optional_flags"]["no_memory"],
                 supports_no_auto_update=probe["optional_flags"]["no_auto_update"],
+                allow_subagents=job.allow_subagents,
             )
             known_paths = [str(cwd)]
             set_phase("prompting")
@@ -2665,6 +2724,7 @@ class JobManager:
                     reasoning_effort,
                     known_paths,
                     scope_paths=job.focus_paths,
+                    allow_subagents=job.allow_subagents,
                 ),
                 overall_deadline,
                 job.timeout_seconds,
@@ -2741,6 +2801,13 @@ class JobManager:
                 },
                 "cwd": ".",
                 "sandbox": "workspace" if job.mode == "implement" else "read-only",
+                "subagent_policy": {
+                    "allowed": job.allow_subagents,
+                    "explicit_opt_in": job.allow_subagents,
+                    "runtime_execution_attested": False,
+                    "bridge_enforced_max_subagents": None,
+                    "observed_subagent_count": None,
+                },
                 "correction_chain": (
                     {
                         "root_job_id": job.correction_root_job_id,
@@ -2767,6 +2834,8 @@ class JobManager:
                     "discovery_acp_processes": 1,
                     "task_acp_processes": 1,
                     "task_acp_sessions": 1,
+                    "acp_counts_scope": "parent_job_only",
+                    "internal_subagents_allowed": job.allow_subagents,
                     "automatic_retries": 0,
                     "automatic_redelegation": False,
                     "max_turns": job.max_turns,
@@ -3003,12 +3072,29 @@ class JobManager:
             return {"schema_version": SCHEMA_VERSION, "jobs": [job.status_view() for job in jobs]}
 
     def cancel(self, job_id: str) -> Dict[str, Any]:
+        queued_descriptor: Optional[int] = None
         with self._lock:
             job = self.get(job_id)
             if job.status in TERMINAL_STATES:
                 return job.status_view()
             job.cancel_event.set()
-            proc = job.process
+            if job.status == "queued" and job.future is not None and job.future.cancel():
+                queued_descriptor = job.cwd_fd
+                job.cwd_fd = None
+                job.status = "cancelled"
+                job.finished_at = _utc_now()
+                job.errors.append({"code": "E_CANCELLED", "message": "The Grok task was cancelled."})
+                job.freeze_progress()
+                self._notify_job(job)
+                view = job.status_view()
+                proc = None
+            else:
+                view = None
+                proc = job.process
+        if view is not None:
+            if queued_descriptor is not None:
+                os.close(queued_descriptor)
+            return view
         terminate_owned_process(proc)
         return self.status(job_id)
 

@@ -23,6 +23,7 @@ from grok_build_bridge import (  # noqa: E402
     DEFAULT_AWAIT_SECONDS,
     DEFAULT_AWAIT_RESULT_CHARS,
     DEFAULT_MAX_TURNS,
+    DEFAULT_MAX_PARALLEL_JOBS,
     DEFAULT_OUTPUT_CHARS,
     DEFAULT_RESULT_PAGE_CHARS,
     DEFAULT_SETUP_TIMEOUT_SECONDS,
@@ -58,7 +59,7 @@ def _manifest_version() -> str:
 SERVER_VERSION = _manifest_version()
 MCP_PROTOCOL_VERSION = "2025-06-18"
 MAX_MCP_LINE_BYTES = 2_000_000
-MANAGER = JobManager(max_workers=2)
+MANAGER = JobManager(max_workers=DEFAULT_MAX_PARALLEL_JOBS)
 MAX_BLOCKING_MCP_WORKERS = 2
 MAX_BLOCKING_MCP_REQUESTS = 4
 MAX_MCP_WRITE_QUEUE = 8
@@ -359,10 +360,10 @@ COMMON_TASK_PROPERTIES = {
         "description": "Absolute current Codex workspace directory. Grok runs directly in this exact directory; broad account, temporary, and system roots are refused.",
     },
     "timeout_seconds": {
-        "type": "integer",
+        "type": ["integer", "null"],
         "minimum": 10,
-        "maximum": 3600,
         "default": DEFAULT_TIMEOUT_SECONDS,
+        "description": "Optional caller-supplied job deadline in seconds. Omit or pass null for no forced task deadline.",
     },
     "max_output_chars": {
         "type": "integer",
@@ -380,6 +381,11 @@ COMMON_TASK_PROPERTIES = {
         "maximum": MAX_AGENT_TURNS,
         "default": DEFAULT_MAX_TURNS,
         "description": "Hard ACP turn ceiling. The bridge never retries automatically.",
+    },
+    "allow_subagents": {
+        "type": "boolean",
+        "default": False,
+        "description": "Request Grok's built-in Agent tool inside this same job/cwd. Defaults to false. Parent CLI sandbox and terminal denial remain; optional deadline, turn and output limits apply to the parent job. The bridge cannot cap or observe child count or attest child sandbox, limit inheritance, and cleanup.",
     },
 }
 
@@ -411,7 +417,7 @@ TOOLS: List[Dict[str, Any]] = [
     ),
     _tool(
         "delegate_readonly",
-        "Start a read-only Grok Build job directly in the exact caller-provided cwd. No repository copy, projection, Git snapshot, file-tree scan, or entry limit is applied. Optional paths are prompt-only focus hints and never change Grok's accessible cwd. The job live-attests the provider default model and highest advertised effort. Pair with await_result; long jobs repeat await_result only after a wait timeout.",
+        "Start a read-only Grok Build job directly in the exact caller-provided cwd. Up to four independent jobs can execute concurrently. Optional allow_subagents requests Grok's built-in Agent tool within this job; it defaults off and real child runtime behavior is unverified. No repository copy, projection, Git snapshot, file-tree scan, or entry limit is applied. Optional paths are prompt-only focus hints and never change Grok's accessible cwd. Pair with await_result; long jobs repeat await_result only after a wait timeout.",
         {
             "type": "object",
             "properties": {
@@ -433,7 +439,7 @@ TOOLS: List[Dict[str, Any]] = [
     ),
     _tool(
         "spawn_readonly",
-        "Start an asynchronous Grok Build research, plan, or review job directly in the exact caller-provided cwd. It requests Grok's read-only sandbox and disables Grok's own subagents and external MCP servers. Returns an exact job ID immediately; prefer delegate_readonly for new callers.",
+        "Start an asynchronous Grok Build research, plan, or review job directly in the exact caller-provided cwd. It requests Grok's read-only sandbox; subagents default off and require allow_subagents=true. External MCP servers remain disabled. Returns an exact job ID immediately; prefer delegate_readonly for new callers.",
         {
             "type": "object",
             "properties": {
@@ -448,7 +454,7 @@ TOOLS: List[Dict[str, Any]] = [
     ),
     _tool(
         "spawn_worker",
-        "Start an asynchronous Grok Build implementation job directly in the exact caller-provided cwd. Git primary checkouts, linked worktrees, dirty Git directories, and non-Git directories are supported. A Luna-requested correction may reference the immediately preceding successful same-cwd worker; the bridge caps rounds and branches but does not snapshot the workspace.",
+        "Start an asynchronous Grok Build implementation job directly in the exact caller-provided cwd. Optional allow_subagents requests Grok's built-in Agent tool within the same job; it defaults off and real child runtime behavior is unverified. Git primary checkouts, linked worktrees, dirty Git directories, and non-Git directories are supported. Same-cwd implementation jobs remain mutually exclusive.",
         {
             "type": "object",
             "properties": {
@@ -601,6 +607,7 @@ def call_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 max_output_chars=arguments.get("max_output_chars", DEFAULT_OUTPUT_CHARS),
                 web_access=arguments.get("web_access"),
                 max_turns=arguments.get("max_turns", DEFAULT_MAX_TURNS),
+                allow_subagents=arguments.get("allow_subagents", False),
                 paths=arguments.get("paths"),
                 delegate_readonly=True,
             )
@@ -620,6 +627,7 @@ def call_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 max_output_chars=arguments.get("max_output_chars", DEFAULT_OUTPUT_CHARS),
                 web_access=arguments.get("web_access"),
                 max_turns=arguments.get("max_turns", DEFAULT_MAX_TURNS),
+                allow_subagents=arguments.get("allow_subagents", False),
             )
             return _content(payload)
         if name == "spawn_worker":
@@ -631,6 +639,7 @@ def call_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 max_output_chars=arguments.get("max_output_chars", DEFAULT_OUTPUT_CHARS),
                 web_access=arguments.get("web_access"),
                 max_turns=arguments.get("max_turns", DEFAULT_MAX_TURNS),
+                allow_subagents=arguments.get("allow_subagents", False),
                 correction_of_job_id=arguments.get("correction_of_job_id"),
             )
             return _content(payload)
