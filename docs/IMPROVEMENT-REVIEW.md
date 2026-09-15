@@ -4,6 +4,8 @@
 
 审查日期：2026-09-14。下文的第一轮结论和 CLI 探测都是改前的历史观察：证据来自当时的仓库实现、fake 测试契约，以及本机 `grok` 1.0.30 的只读探测（`--version` / `--help` / `models`，以及无 `session/prompt` 的 ACP `initialize` / `authenticate` / `session/new`）。未跑真实 Grok 任务，也没有 Codex 宿主的调用轨迹；这些记录不应当作本轮新增验证。
 
+2026-09-15 后续实现：当前 bridge 最多并行执行四个独立 job；每个 job 可显式设置 `allow_subagents=true`，允许 Grok 内置 Agent 在同一任务内分工，默认仍禁用。CLI 没有公开的内部 subagent 数量上限，bridge 也不计数。`timeout_seconds` 省略或为 `null` 时不设任务截止；`await_result` 的等待窗口不会终止 job。下文的 `--no-subagents`、双 worker 和“不在本轮”均为 2026-09-14 历史观察，不描述当前接口。真实内部 Agent 行为仍未经过 `session/prompt` smoke test。
+
 ## 本轮状态与边界
 
 本轮已把运行中诊断字段纳入 status、await_result 超时/终态响应和终态 result 的契约；字段语义见文末“诊断字段契约”。本轮没有执行真实 CLI 任务、真实 ACP session/prompt 或联网探测；fake 只覆盖协议测试。profile、记忆、slash command、deny/tool ID 的真实 CLI 行为，以及 `--json-schema` 与 ACP stdio 的兼容性，仍需用户明确授权后再做受控验证。低收益缓存、paths 补齐和工具排序不在本轮实施范围。
