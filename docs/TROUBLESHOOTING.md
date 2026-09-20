@@ -64,7 +64,7 @@ xhigh > high > medium > low > none
 
 | 错误或状态 | 原因 | 处理 |
 | --- | --- | --- |
-| E_CWD、E_CWD_SCOPE、E_CWD_CHANGED、E_CWD_FD | cwd 不是稳定、具体且可访问的项目目录，或排队期间身份变化 | 使用当前 workspace 的实际目录，检查权限和路径替换；不要扩大到账号或系统目录 |
+| E_CWD、E_CWD_SCOPE、E_CWD_CHANGED、E_CWD_FD | cwd 不是稳定、具体且可访问的项目目录，或排队期间身份变化 | 使用当前 workspace 的实际目录，检查权限和路径替换；Windows 当前不支持真实 Grok job，会明确返回 `E_CWD_FD_UNSUPPORTED`；不要扩大到账号或系统目录 |
 | E_CWD_BUSY | 同一 cwd 已有活动 implement job | 等待准确 job 结束或取消它；不要再次提交相同任务 |
 | E_GROK_NOT_READY、E_AUTH | CLI、登录、目录刷新或能力探测失败 | 检查 grok login、grok models 和 PATH；不要自动重试同一 job |
 | E_MODEL_ATTESTATION、E_MODEL_MISMATCH、E_EFFORT_MISMATCH、E_MODEL_FALLBACK、E_MODEL_SWITCHED | 运行时模型证明不一致或发生 fallback/switch | 停止使用结果，保留收据并检查 CLI/服务配置 |

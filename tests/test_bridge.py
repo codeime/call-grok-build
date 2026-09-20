@@ -43,6 +43,10 @@ from grok_build_bridge import (  # noqa: E402
 
 FAKE_GROK = PLUGIN_ROOT / "tests" / "fake_grok.py"
 SYNTHETIC_EMAIL = "reviewer" + "@" + "example.invalid"
+POSIX_STABLE_CWD = unittest.skipUnless(
+    os.name == "posix",
+    "JobManager lifecycle tests require POSIX stable directory handles; Windows runtime support is not claimed.",
+)
 PROGRESS_FIELDS = (
     "phase",
     "duration_ms",
@@ -96,6 +100,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
         else:
             os.environ["GROK_BUILD_BIN"] = self.old_binary
 
+    @POSIX_STABLE_CWD
     def test_probe_uses_live_provider_default_without_version_constant(self) -> None:
         probe = probe_grok(force=True)
         self.assertTrue(probe["ready"])
@@ -104,6 +109,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
         self.assertEqual(probe["available_models"], ["grok-9.2", "grok-9.1"])
         self.assertTrue(probe["online_model_check_confirmed"])
 
+    @POSIX_STABLE_CWD
     def test_setup_attests_highest_effort_for_runtime_default(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             result = setup_grok(directory)
@@ -187,6 +193,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertFalse(_catalog_refresh_is_clean(catalog + marker, 0))
 
+    @POSIX_STABLE_CWD
     def test_probe_rejects_stale_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "stale-models-grok"
@@ -197,6 +204,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
         self.assertFalse(result["ready"])
         self.assertFalse(result["online_model_check_confirmed"])
 
+    @POSIX_STABLE_CWD
     def test_probe_is_resolved_in_target_cwd(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory)
@@ -205,6 +213,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
         self.assertEqual(result["catalog_cwd"], str(target.resolve()))
         self.assertIn("Probe cwd marker observed", result["model_diagnostics"])
 
+    @POSIX_STABLE_CWD
     def test_readonly_job_returns_v2_direct_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = JobManager()
@@ -231,6 +240,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
         self.assertIsNone(result["loop_guard"]["timeout_seconds"])
         self.assertFalse(result["subagent_policy"]["allowed"])
 
+    @POSIX_STABLE_CWD
     def test_non_git_implement_writes_to_exact_cwd(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -252,6 +262,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
         self.assertTrue(result["verification"]["review_required"])
         self.assertEqual(result["workspace"]["execution"], "native_direct")
 
+    @POSIX_STABLE_CWD
     def test_primary_dirty_git_checkout_allows_direct_implement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -276,6 +287,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
             self.assertEqual((root / "tracked.txt").read_text(), "dirty\n")
             self.assertTrue((root / "untracked.txt").is_file())
 
+    @POSIX_STABLE_CWD
     def test_paths_are_prompt_only_and_keep_exact_cwd(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -312,6 +324,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
         ):
             self.assertFalse(hasattr(bridge, name), name)
 
+    @POSIX_STABLE_CWD
     def test_directory_with_20001_entries_runs_without_tree_preflight(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -437,6 +450,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
         )
         self.assertNotIn("Agent", subagent_worker)
 
+    @POSIX_STABLE_CWD
     def test_default_manager_runs_four_jobs_concurrently(self) -> None:
         manager = JobManager()
         original_run_job = manager._run_job
@@ -492,6 +506,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
             release_peers.set()
             manager.close()
 
+    @POSIX_STABLE_CWD
     def test_subagent_opt_in_is_reported_in_status_and_result(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = JobManager(max_workers=1)
@@ -517,6 +532,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
         self.assertEqual(result["loop_guard"]["acp_counts_scope"], "parent_job_only")
         self.assertTrue(result["loop_guard"]["internal_subagents_allowed"])
 
+    @POSIX_STABLE_CWD
     def test_explicit_deadline_has_no_upper_bound(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = JobManager(max_workers=1)
@@ -534,6 +550,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
         self.assertEqual(status["status"], "succeeded", status)
         self.assertEqual(result["loop_guard"]["timeout_seconds"], 100_000)
 
+    @POSIX_STABLE_CWD
     def test_same_cwd_allows_only_one_active_implement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = JobManager(max_workers=2)
@@ -559,6 +576,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
             finally:
                 manager.close()
 
+    @POSIX_STABLE_CWD
     def test_independent_managers_do_not_share_job_ids(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             first = JobManager(max_workers=1)
@@ -575,6 +593,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
                 first.close()
                 second.close()
 
+    @POSIX_STABLE_CWD
     def test_queued_job_cannot_follow_replaced_cwd(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -613,6 +632,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
             finally:
                 manager.close()
 
+    @POSIX_STABLE_CWD
     def test_correction_chain_is_bounded_and_non_branching(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = JobManager(max_workers=1)
@@ -649,6 +669,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
             finally:
                 manager.close()
 
+    @POSIX_STABLE_CWD
     def test_correction_must_reference_latest_same_cwd_implementation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = JobManager(max_workers=1)
@@ -674,6 +695,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
             finally:
                 manager.close()
 
+    @POSIX_STABLE_CWD
     def test_await_result_long_polls_same_job_without_redelegation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = JobManager(max_workers=1)
@@ -698,6 +720,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
             finally:
                 manager.close()
 
+    @POSIX_STABLE_CWD
     def test_live_progress_is_safe_and_freezes_across_views(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = JobManager(max_workers=1)
@@ -790,6 +813,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
             finally:
                 manager.close()
 
+    @POSIX_STABLE_CWD
     def test_no_activity_keeps_progress_activity_fields_null(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = JobManager(max_workers=1)
@@ -894,6 +918,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
         self.assertEqual(activity_types, ["tool_call", "tool_call_update"])
         self.assertNotIn("SYNTHETIC", json.dumps(activity_types))
 
+    @POSIX_STABLE_CWD
     def test_cancel_stops_exact_active_job(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = JobManager(max_workers=1)
@@ -920,6 +945,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
         self.assertEqual(DEFAULT_OUTPUT_CHARS, 16_000)
         self.assertEqual(DEFAULT_AWAIT_RESULT_CHARS, 12_000)
 
+    @POSIX_STABLE_CWD
     def test_failure_modes_are_fail_closed_without_retry(self) -> None:
         cases = (
             ("LONG_OUTPUT", "E_OUTPUT_LIMIT"),
@@ -949,6 +975,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
                 finally:
                     manager.close()
 
+    @POSIX_STABLE_CWD
     def test_sensitive_environment_is_not_forwarded(self) -> None:
         with mock.patch.dict(
             os.environ, {"XAI_API_KEY": "xai-test-secret"}, clear=False
@@ -1004,6 +1031,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
         self.assertNotIn("/opt/private-team", caught.exception.message)
         self.assertIn("custom-grok", caught.exception.message)
 
+    @POSIX_STABLE_CWD
     def test_remote_error_is_redacted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manager = JobManager()
@@ -1019,6 +1047,7 @@ class DirectCwdBridgeTests(unittest.TestCase):
         self.assertNotIn("SYNTHETIC_REMOTE_SECRET", encoded)
         self.assertIn("[REDACTED]", encoded)
 
+    @POSIX_STABLE_CWD
     def test_cwd_scope_refuses_broad_roots_and_symlink_loops(self) -> None:
         with self.assertRaises(BridgeError) as home_error:
             _validate_cwd(str(Path.home()))

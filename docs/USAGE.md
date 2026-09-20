@@ -4,6 +4,10 @@
 
 ## 开始前
 
+当前 bridge 的真实 Grok job 运行时支持 POSIX。Windows 可以加载插件并运行契约
+检查，但由于稳定目录身份依赖 POSIX 文件描述符，job 会明确返回
+`E_CWD_FD_UNSUPPORTED`；Windows runtime 支持仍未声明。
+
 Codex 宿主会自动传入当前 workspace 的绝对 cwd。不要为了调用 Grok 复制项目、准备额外目录或改变当前 Git 状态。直接使用当前打开的项目目录即可。
 
 确认 Grok CLI 已安装并登录：

@@ -37,6 +37,15 @@
 
 ## 本地检查
 
+### 平台支持
+
+当前 bridge 的稳定 workspace 身份依赖 POSIX 目录文件描述符和进程组能力。
+因此 Windows 可以运行包导入和契约检查，但插件目前不宣称 Windows 上支持真实
+Grok job；运行时会以 `E_CWD_FD_UNSUPPORTED` 明确拒绝。`tests/test_bridge.py`
+中的 JobManager 生命周期测试在 Windows 上显式跳过，避免把未支持的平台边界
+报告成测试错误。若要支持 Windows runtime，需要单独设计并审查等价的稳定目录
+身份和进程生命周期实现。
+
 ### 语法检查
 
 ~~~text
