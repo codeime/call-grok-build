@@ -43,6 +43,10 @@ from grok_build_bridge import (  # noqa: E402
 
 FAKE_GROK = PLUGIN_ROOT / "tests" / "fake_grok.py"
 SYNTHETIC_EMAIL = "reviewer" + "@" + "example.invalid"
+POSIX_STABLE_CWD = unittest.skipUnless(
+    os.name == "posix",
+    "JobManager lifecycle tests require POSIX stable directory handles; Windows runtime support is not claimed.",
+)
 PROGRESS_FIELDS = (
     "phase",
     "duration_ms",
@@ -85,6 +89,7 @@ def wait_terminal(manager: JobManager, job_id: str, timeout: float = 60.0) -> di
     raise AssertionError(f"job {job_id} did not finish")
 
 
+@POSIX_STABLE_CWD
 class DirectCwdBridgeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.old_binary = os.environ.get("GROK_BUILD_BIN")

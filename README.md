@@ -19,6 +19,9 @@ Call Grok Build 是一个 Codex 插件。它让 Codex 主代理或具备插件�
 - Python 3.9 或更高版本；运行时只使用 Python 标准库。
 - PATH 中可调用 Grok Build CLI，命令名为 grok。
 - Grok CLI 已登录，并能刷新模型目录及建立 ACP 连接。
+- 当前 bridge 的真实 Grok job 运行时支持 POSIX；Windows 可运行契约检查，但会以
+  `E_CWD_FD_UNSUPPORTED` 拒绝 job。Windows 支持矩阵未覆盖稳定目录句柄和进程组
+  语义，不能把 Windows 上的契约测试结果当作真实 job 支持证明。
 
 首次使用可以检查：
 
